@@ -1,0 +1,62 @@
+{
+    "name": "italix/datasets",
+    "description": "Pluggable datatable and data-tree rendering for PHP - works with any TableMeta source and multiple JS datatable libraries",
+    "type": "library",
+    "license": "LGPL-2.1-or-later",
+    "keywords": [
+        "datatable",
+        "datatree",
+        "tabulator",
+        "grid",
+        "table",
+        "tree",
+        "hierarchical",
+        "server-side",
+        "pagination",
+        "sorting"
+    ],
+    "authors": [
+        {
+            "name": "Italix",
+            "homepage": "https://github.com/italix-net"
+        }
+    ],
+    "support": {
+        "issues": "https://github.com/italix-net/datasets/issues",
+        "source": "https://github.com/italix-net/datasets"
+    },
+    "require": {
+        "php": "^7.4 || ^8.0",
+        "italix/contracts": "dev-main"
+    },
+    "require-dev": {
+        "phpunit/phpunit": "^9.5"
+    },
+    "autoload": {
+        "psr-4": {
+            "Italix\\DataSets\\": "src/"
+        },
+        "files": [
+            "src/functions.php"
+        ]
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "Italix\\DataSets\\Tests\\": "tests/"
+        }
+    },
+    "scripts": {
+        "test": "phpunit"
+    },
+    "config": {
+        "sort-packages": true
+    },
+    "minimum-stability": "dev",
+    "prefer-stable": true,
+    "repositories": [
+        {
+            "type": "vcs",
+            "url": "https://github.com/italix-net/contracts"
+        }
+    ]
+}
