@@ -1,0 +1,213 @@
+<?php
+/**
+ * Italix DataSets - ServerSideRequest
+ *
+ * @package Italix\DataSets
+ * @license LGPL-2.1-or-later
+ */
+
+declare(strict_types=1);
+
+namespace Italix\DataSets;
+
+/**
+ * Parses server-side datatable request parameters.
+ *
+ * Extracts pagination, sorting, searching, and filtering info from
+ * the HTTP request (typically $_GET or $_POST).
+ *
+ * Example:
+ *
+ *     // From superglobals
+ *     $request = ServerSideRequest::from_globals();
+ *
+ *     // From a custom array
+ *     $request = new ServerSideRequest($params);
+ *
+ *     // Use with your query builder
+ *     $query->order_by($request->sort_column(), $request->sort_direction())
+ *           ->limit($request->per_page())
+ *           ->offset($request->offset());
+ */
+class ServerSideRequest
+{
+    /** @var array */
+    private $params;
+
+    /**
+     * @param array $params The request parameters
+     */
+    public function __construct(array $params)
+    {
+        $this->params = $params;
+    }
+
+    /**
+     * Create from PHP superglobals ($_GET for GET, $_POST for POST).
+     *
+     * @return self
+     */
+    public static function from_globals(): self
+    {
+        $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
+        $params = strtoupper($method) === 'POST' ? $_POST : $_GET;
+
+        return new self($params);
+    }
+
+    /**
+     * Create from a custom array (useful for testing or framework integration).
+     *
+     * @param array $params
+     * @return self
+     */
+    public static function from_array(array $params): self
+    {
+        return new self($params);
+    }
+
+    // =========================================================================
+    // Pagination
+    // =========================================================================
+
+    /**
+     * Get the requested page number (1-based).
+     *
+     * @return int
+     */
+    public function page(): int
+    {
+        $page = (int)($this->params['page'] ?? 1);
+        return max(1, $page);
+    }
+
+    /**
+     * Get the number of rows per page.
+     *
+     * @param int $default
+     * @return int
+     */
+    public function per_page(int $default = 25): int
+    {
+        $size = (int)($this->params['per_page'] ?? $this->params['size'] ?? $default);
+        return max(1, $size);
+    }
+
+    /**
+     * Get the calculated offset for SQL OFFSET.
+     *
+     * @param int $default_per_page
+     * @return int
+     */
+    public function offset(int $default_per_page = 25): int
+    {
+        return ($this->page() - 1) * $this->per_page($default_per_page);
+    }
+
+    // =========================================================================
+    // Sorting
+    // =========================================================================
+
+    /**
+     * Get the sort column name.
+     *
+     * @param string|null $default
+     * @return string|null
+     */
+    public function sort_column(?string $default = null): ?string
+    {
+        return $this->params['sort'] ?? $this->params['sort_column'] ?? $default;
+    }
+
+    /**
+     * Get the sort direction.
+     *
+     * @param string $default 'asc' or 'desc'
+     * @return string
+     */
+    public function sort_direction(string $default = 'asc'): string
+    {
+        $dir = strtolower($this->params['sort_dir'] ?? $this->params['sort_direction'] ?? $default);
+        return in_array($dir, ['asc', 'desc'], true) ? $dir : $default;
+    }
+
+    // =========================================================================
+    // Searching
+    // =========================================================================
+
+    /**
+     * Get the global search query.
+     *
+     * @return string|null
+     */
+    public function search(): ?string
+    {
+        $q = $this->params['search'] ?? $this->params['q'] ?? null;
+        if ($q === null || $q === '') {
+            return null;
+        }
+        return (string)$q;
+    }
+
+    // =========================================================================
+    // Filtering
+    // =========================================================================
+
+    /**
+     * Get column-level filters.
+     *
+     * Expects filters as an associative array: filters[column]=value
+     *
+     * @return array<string, string>
+     */
+    public function filters(): array
+    {
+        $filters = $this->params['filters'] ?? [];
+        if (!is_array($filters)) {
+            return [];
+        }
+
+        // Remove empty filter values
+        return array_filter($filters, function ($value) {
+            return $value !== '' && $value !== null;
+        });
+    }
+
+    /**
+     * Get a specific filter value.
+     *
+     * @param string $column
+     * @return string|null
+     */
+    public function filter(string $column): ?string
+    {
+        $filters = $this->filters();
+        return isset($filters[$column]) ? (string)$filters[$column] : null;
+    }
+
+    // =========================================================================
+    // Raw Access
+    // =========================================================================
+
+    /**
+     * Get any raw parameter by key.
+     *
+     * @param string $key
+     * @param mixed $default
+     * @return mixed
+     */
+    public function get(string $key, $default = null)
+    {
+        return $this->params[$key] ?? $default;
+    }
+
+    /**
+     * Get all raw parameters.
+     *
+     * @return array
+     */
+    public function all(): array
+    {
+        return $this->params;
+    }
+}
