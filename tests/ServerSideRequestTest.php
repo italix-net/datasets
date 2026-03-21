@@ -124,6 +124,26 @@ class ServerSideRequestTest extends TestCase
         $this->assertSame('doe', $req->search());
     }
 
+    public function test_search_columns(): void
+    {
+        $req = new ServerSideRequest([
+            'search_columns' => ['name', 'email'],
+        ]);
+        $this->assertSame(['name', 'email'], $req->search_columns());
+    }
+
+    public function test_search_columns_empty_when_missing(): void
+    {
+        $req = new ServerSideRequest([]);
+        $this->assertSame([], $req->search_columns());
+    }
+
+    public function test_search_columns_empty_when_not_array(): void
+    {
+        $req = new ServerSideRequest(['search_columns' => 'invalid']);
+        $this->assertSame([], $req->search_columns());
+    }
+
     public function test_filters(): void
     {
         $req = new ServerSideRequest([
@@ -168,5 +188,130 @@ class ServerSideRequestTest extends TestCase
     {
         $req = ServerSideRequest::from_array(['page' => '2']);
         $this->assertSame(2, $req->page());
+    }
+
+    // =========================================================================
+    // Multi-column Sorting
+    // =========================================================================
+
+    public function test_sorts_empty_when_no_param(): void
+    {
+        $req = new ServerSideRequest([]);
+        $this->assertSame([], $req->sorts());
+    }
+
+    public function test_sorts_empty_when_not_array(): void
+    {
+        $req = new ServerSideRequest(['sorts' => 'invalid']);
+        $this->assertSame([], $req->sorts());
+    }
+
+    public function test_sorts_single(): void
+    {
+        $req = new ServerSideRequest([
+            'sorts' => [
+                ['field' => 'name', 'dir' => 'asc'],
+            ],
+        ]);
+
+        $sorts = $req->sorts();
+        $this->assertCount(1, $sorts);
+        $this->assertSame('name', $sorts[0]['column']);
+        $this->assertSame('asc', $sorts[0]['direction']);
+    }
+
+    public function test_sorts_multiple(): void
+    {
+        $req = new ServerSideRequest([
+            'sorts' => [
+                ['field' => 'name', 'dir' => 'asc'],
+                ['field' => 'created_at', 'dir' => 'desc'],
+            ],
+        ]);
+
+        $sorts = $req->sorts();
+        $this->assertCount(2, $sorts);
+        $this->assertSame('name', $sorts[0]['column']);
+        $this->assertSame('asc', $sorts[0]['direction']);
+        $this->assertSame('created_at', $sorts[1]['column']);
+        $this->assertSame('desc', $sorts[1]['direction']);
+    }
+
+    public function test_sorts_invalid_dir_defaults_to_asc(): void
+    {
+        $req = new ServerSideRequest([
+            'sorts' => [
+                ['field' => 'name', 'dir' => 'INVALID'],
+            ],
+        ]);
+
+        $sorts = $req->sorts();
+        $this->assertSame('asc', $sorts[0]['direction']);
+    }
+
+    public function test_sorts_missing_dir_defaults_to_asc(): void
+    {
+        $req = new ServerSideRequest([
+            'sorts' => [
+                ['field' => 'name'],
+            ],
+        ]);
+
+        $sorts = $req->sorts();
+        $this->assertSame('asc', $sorts[0]['direction']);
+    }
+
+    public function test_sorts_skips_entries_without_field(): void
+    {
+        $req = new ServerSideRequest([
+            'sorts' => [
+                ['dir' => 'asc'],
+                ['field' => 'name', 'dir' => 'desc'],
+                'invalid',
+            ],
+        ]);
+
+        $sorts = $req->sorts();
+        $this->assertCount(1, $sorts);
+        $this->assertSame('name', $sorts[0]['column']);
+    }
+
+    public function test_sort_column_from_sorts_param(): void
+    {
+        $req = new ServerSideRequest([
+            'sorts' => [
+                ['field' => 'email', 'dir' => 'desc'],
+                ['field' => 'name', 'dir' => 'asc'],
+            ],
+        ]);
+
+        // sort_column() returns the first sort's column
+        $this->assertSame('email', $req->sort_column());
+    }
+
+    public function test_sort_direction_from_sorts_param(): void
+    {
+        $req = new ServerSideRequest([
+            'sorts' => [
+                ['field' => 'email', 'dir' => 'desc'],
+            ],
+        ]);
+
+        $this->assertSame('desc', $req->sort_direction());
+    }
+
+    public function test_sorts_takes_precedence_over_flat_params(): void
+    {
+        $req = new ServerSideRequest([
+            'sort' => 'name',
+            'sort_dir' => 'asc',
+            'sorts' => [
+                ['field' => 'email', 'dir' => 'desc'],
+            ],
+        ]);
+
+        // sorts[] should take precedence
+        $this->assertSame('email', $req->sort_column());
+        $this->assertSame('desc', $req->sort_direction());
     }
 }

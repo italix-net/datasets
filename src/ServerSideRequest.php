@@ -109,26 +109,74 @@ class ServerSideRequest
     // =========================================================================
 
     /**
-     * Get the sort column name.
+     * Get the primary sort column name.
+     *
+     * For multi-column sorting, use sorts() instead.
      *
      * @param string|null $default
      * @return string|null
      */
     public function sort_column(?string $default = null): ?string
     {
+        // Multi-sort format: sort[0][field]=name&sort[0][dir]=asc
+        $sorts = $this->sorts();
+        if (!empty($sorts)) {
+            return $sorts[0]['column'];
+        }
+
         return $this->params['sort'] ?? $this->params['sort_column'] ?? $default;
     }
 
     /**
-     * Get the sort direction.
+     * Get the primary sort direction.
+     *
+     * For multi-column sorting, use sorts() instead.
      *
      * @param string $default 'asc' or 'desc'
      * @return string
      */
     public function sort_direction(string $default = 'asc'): string
     {
+        $sorts = $this->sorts();
+        if (!empty($sorts)) {
+            return $sorts[0]['direction'];
+        }
+
         $dir = strtolower($this->params['sort_dir'] ?? $this->params['sort_direction'] ?? $default);
         return in_array($dir, ['asc', 'desc'], true) ? $dir : $default;
+    }
+
+    /**
+     * Get all sort columns (for multi-column sorting).
+     *
+     * Returns an array of ['column' => string, 'direction' => string] pairs.
+     * The JS bootstrap sends these as sort[0][field]=name&sort[0][dir]=asc.
+     *
+     * @return array<array{column: string, direction: string}>
+     */
+    public function sorts(): array
+    {
+        $sorts_param = $this->params['sorts'] ?? null;
+        if (!is_array($sorts_param) || empty($sorts_param)) {
+            return [];
+        }
+
+        $result = [];
+        foreach ($sorts_param as $sort) {
+            if (!is_array($sort) || !isset($sort['field'])) {
+                continue;
+            }
+            $dir = strtolower($sort['dir'] ?? 'asc');
+            if (!in_array($dir, ['asc', 'desc'], true)) {
+                $dir = 'asc';
+            }
+            $result[] = [
+                'column' => (string)$sort['field'],
+                'direction' => $dir,
+            ];
+        }
+
+        return $result;
     }
 
     // =========================================================================
@@ -147,6 +195,23 @@ class ServerSideRequest
             return null;
         }
         return (string)$q;
+    }
+
+    /**
+     * Get the columns to apply the global search to.
+     *
+     * The JS bootstrap sends these as search_columns[]=name&search_columns[]=email.
+     * If not provided, the backend should search all searchable columns.
+     *
+     * @return string[]
+     */
+    public function search_columns(): array
+    {
+        $columns = $this->params['search_columns'] ?? [];
+        if (!is_array($columns)) {
+            return [];
+        }
+        return array_values(array_filter($columns, 'is_string'));
     }
 
     // =========================================================================

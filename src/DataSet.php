@@ -33,10 +33,24 @@ use RuntimeException;
  *     $ds->column('created_at')->formatter('datetime');
  *     $ds->ajax_url('/api/users');
  *
+ *     // Action buttons on each row
+ *     $ds->action_column()
+ *        ->button('edit', 'Edit');
+ *     $ds->action_column()
+ *        ->button('delete', 'Delete')->confirm('Are you sure?');
+ *
+ *     // Toolbar with bulk actions
+ *     $ds->selectable(true);
+ *     $ds->toolbar()
+ *        ->button('bulk_delete', 'Delete Selected', 'selected');
+ *
+ *     // Events
+ *     $ds->on('edit', 'onEditRow');
+ *     $ds->on('row_click', 'onRowClick');
+ *
  *     // Render with a driver
  *     $driver = new TabulatorDriver();
- *     $config = $driver->render($ds);
- *     // -> JSON config for the JS library
+ *     $js = $driver->render_script($ds, '#my-table');
  */
 class DataSet
 {
@@ -58,11 +72,8 @@ class DataSet
     /** @var array Extra parameters to send with AJAX requests */
     private $ajax_params = [];
 
-    /** @var string|null Default sort column */
-    private $default_sort_column = null;
-
-    /** @var string Default sort direction */
-    private $default_sort_direction = 'asc';
+    /** @var array<array{column: string, direction: string}> Default sort columns */
+    private $default_sorts = [];
 
     /** @var int Rows per page */
     private $per_page = 25;
@@ -87,6 +98,24 @@ class DataSet
 
     /** @var string|null Placeholder text for the global search input */
     private $search_placeholder = null;
+
+    /** @var int Debounce delay in milliseconds for search/filter inputs */
+    private $search_debounce = 300;
+
+    /** @var int Minimum characters before triggering a search */
+    private $search_min_length = 1;
+
+    /** @var ActionColumn|null Per-row action buttons column */
+    private $action_column = null;
+
+    /** @var Toolbar|null Table toolbar with buttons */
+    private $toolbar = null;
+
+    /** @var bool|string Row selection mode: false, true (checkbox), 'highlight' (click-to-select) */
+    private $selectable = false;
+
+    /** @var array<string, string> Event name => JS callback function name */
+    private $events = [];
 
     /** @var array Extra driver-specific options merged at the top level */
     private $extra = [];
@@ -224,7 +253,16 @@ class DataSet
     // =========================================================================
 
     /**
-     * Set the default sort column and direction.
+     * Set default sort column(s).
+     *
+     * Can be called once for a single sort, or multiple times to sort
+     * by multiple columns. Each call appends to the sort list.
+     *
+     * Example:
+     *
+     *     $ds->default_sort('name', 'asc');
+     *     $ds->default_sort('created_at', 'desc');
+     *     // -> sorts by name ASC first, then created_at DESC
      *
      * @param string $column
      * @param string $direction 'asc' or 'desc'
@@ -232,8 +270,10 @@ class DataSet
      */
     public function default_sort(string $column, string $direction = 'asc'): self
     {
-        $this->default_sort_column = $column;
-        $this->default_sort_direction = strtolower($direction);
+        $this->default_sorts[] = [
+            'column' => $column,
+            'direction' => strtolower($direction),
+        ];
         return $this;
     }
 
@@ -332,6 +372,203 @@ class DataSet
     }
 
     /**
+     * Set the debounce delay for search/filter inputs.
+     *
+     * Controls how long to wait (in ms) after the user stops typing
+     * before sending an AJAX request. Prevents excessive requests.
+     *
+     * @param int $ms Delay in milliseconds (default: 300)
+     * @return self
+     */
+    public function search_debounce(int $ms): self
+    {
+        $this->search_debounce = $ms;
+        return $this;
+    }
+
+    /**
+     * Set the minimum number of characters before triggering a search.
+     *
+     * @param int $length Minimum characters (default: 1)
+     * @return self
+     */
+    public function search_min_length(int $length): self
+    {
+        $this->search_min_length = $length;
+        return $this;
+    }
+
+    // =========================================================================
+    // Action Column
+    // =========================================================================
+
+    /**
+     * Get or create the per-row action column.
+     *
+     * @return ActionColumn
+     */
+    public function action_column(): ActionColumn
+    {
+        if ($this->action_column === null) {
+            $this->action_column = new ActionColumn();
+        }
+        return $this->action_column;
+    }
+
+    /**
+     * Check if an action column is configured.
+     *
+     * @return bool
+     */
+    public function has_action_column(): bool
+    {
+        return $this->action_column !== null && !empty($this->action_column->get_buttons());
+    }
+
+    /**
+     * Get the action column (may be null).
+     *
+     * @return ActionColumn|null
+     */
+    public function get_action_column(): ?ActionColumn
+    {
+        return $this->action_column;
+    }
+
+    // =========================================================================
+    // Toolbar
+    // =========================================================================
+
+    /**
+     * Get or create the toolbar.
+     *
+     * @return Toolbar
+     */
+    public function toolbar(): Toolbar
+    {
+        if ($this->toolbar === null) {
+            $this->toolbar = new Toolbar();
+        }
+        return $this->toolbar;
+    }
+
+    /**
+     * Check if a toolbar is configured.
+     *
+     * @return bool
+     */
+    public function has_toolbar(): bool
+    {
+        return $this->toolbar !== null && !empty($this->toolbar->get_buttons());
+    }
+
+    /**
+     * Get the toolbar (may be null).
+     *
+     * @return Toolbar|null
+     */
+    public function get_toolbar(): ?Toolbar
+    {
+        return $this->toolbar;
+    }
+
+    // =========================================================================
+    // Row Selection
+    // =========================================================================
+
+    /**
+     * Enable row selection.
+     *
+     * @param bool|string $mode true for checkbox selection, 'highlight' for click-to-select
+     * @return self
+     */
+    public function selectable($mode = true): self
+    {
+        $this->selectable = $mode;
+        return $this;
+    }
+
+    /**
+     * Check if row selection is enabled.
+     *
+     * @return bool
+     */
+    public function is_selectable(): bool
+    {
+        return $this->selectable !== false;
+    }
+
+    /**
+     * Get the selection mode.
+     *
+     * @return bool|string false, true, or 'highlight'
+     */
+    public function get_selectable()
+    {
+        return $this->selectable;
+    }
+
+    // =========================================================================
+    // Events
+    // =========================================================================
+
+    /**
+     * Register a JS callback for an event.
+     *
+     * The callback function name refers to a function in the global scope
+     * (window.functionName) that the JS bootstrap will call when the event fires.
+     *
+     * Built-in events:
+     * - 'row_click'       — callback(rowData, row)
+     * - 'row_dbl_click'   — callback(rowData, row)
+     * - 'row_context'     — callback(rowData, row, event)
+     * - 'row_selected'    — callback(rowData, row)
+     * - 'row_deselected'  — callback(rowData, row)
+     *
+     * Action events (from action_column buttons):
+     * - '{button_name}'   — callback(rowData, row)
+     *
+     * Toolbar events (from toolbar buttons):
+     * - '{button_name}'   — callback(selectedRows) for scope='selected'
+     *                     — callback(allData) for scope='all'
+     *                     — callback() for scope='none'
+     *
+     * @param string $event Event or action name
+     * @param string $callback JS function name (must exist in window scope)
+     * @return self
+     */
+    public function on(string $event, string $callback): self
+    {
+        $this->events[$event] = $callback;
+        return $this;
+    }
+
+    /**
+     * Get all registered event callbacks.
+     *
+     * @return array<string, string>
+     */
+    public function get_events(): array
+    {
+        return $this->events;
+    }
+
+    /**
+     * Get the callback for a specific event.
+     *
+     * @param string $event
+     * @return string|null
+     */
+    public function get_event_callback(string $event): ?string
+    {
+        return $this->events[$event] ?? null;
+    }
+
+    // =========================================================================
+    // Extra
+    // =========================================================================
+
+    /**
      * Set extra driver-specific options merged at the top level.
      *
      * @param array $options
@@ -375,16 +612,34 @@ class DataSet
         return $this->ajax_params;
     }
 
-    /** @return string|null */
-    public function get_default_sort_column(): ?string
+    /**
+     * Get the default sort columns.
+     *
+     * @return array<array{column: string, direction: string}>
+     */
+    public function get_default_sorts(): array
     {
-        return $this->default_sort_column;
+        return $this->default_sorts;
     }
 
-    /** @return string */
+    /**
+     * Get the first default sort column (backwards compat).
+     *
+     * @return string|null
+     */
+    public function get_default_sort_column(): ?string
+    {
+        return !empty($this->default_sorts) ? $this->default_sorts[0]['column'] : null;
+    }
+
+    /**
+     * Get the first default sort direction (backwards compat).
+     *
+     * @return string
+     */
     public function get_default_sort_direction(): string
     {
-        return $this->default_sort_direction;
+        return !empty($this->default_sorts) ? $this->default_sorts[0]['direction'] : 'asc';
     }
 
     /** @return int */
@@ -433,6 +688,34 @@ class DataSet
     public function get_search_placeholder(): ?string
     {
         return $this->search_placeholder;
+    }
+
+    /** @return int */
+    public function get_search_debounce(): int
+    {
+        return $this->search_debounce;
+    }
+
+    /** @return int */
+    public function get_search_min_length(): int
+    {
+        return $this->search_min_length;
+    }
+
+    /**
+     * Get the list of searchable column names.
+     *
+     * @return string[]
+     */
+    public function get_searchable_columns(): array
+    {
+        $searchable = [];
+        foreach ($this->each_column() as $name => $col) {
+            if ($col->is_searchable()) {
+                $searchable[] = $name;
+            }
+        }
+        return $searchable;
     }
 
     /** @return array */
