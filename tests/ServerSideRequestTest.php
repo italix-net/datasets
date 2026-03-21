@@ -124,6 +124,26 @@ class ServerSideRequestTest extends TestCase
         $this->assertSame('doe', $req->search());
     }
 
+    public function test_search_columns(): void
+    {
+        $req = new ServerSideRequest([
+            'search_columns' => ['name', 'email'],
+        ]);
+        $this->assertSame(['name', 'email'], $req->search_columns());
+    }
+
+    public function test_search_columns_empty_when_missing(): void
+    {
+        $req = new ServerSideRequest([]);
+        $this->assertSame([], $req->search_columns());
+    }
+
+    public function test_search_columns_empty_when_not_array(): void
+    {
+        $req = new ServerSideRequest(['search_columns' => 'invalid']);
+        $this->assertSame([], $req->search_columns());
+    }
+
     public function test_filters(): void
     {
         $req = new ServerSideRequest([

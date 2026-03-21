@@ -155,4 +155,46 @@ class DataSetTest extends TestCase
             $ds->get_extra()
         );
     }
+
+    public function test_search_debounce_default(): void
+    {
+        $ds = new DataSet(StubTableMeta::users());
+        $this->assertSame(300, $ds->get_search_debounce());
+    }
+
+    public function test_search_debounce_custom(): void
+    {
+        $ds = new DataSet(StubTableMeta::users());
+        $ds->search_debounce(500);
+        $this->assertSame(500, $ds->get_search_debounce());
+    }
+
+    public function test_search_min_length_default(): void
+    {
+        $ds = new DataSet(StubTableMeta::users());
+        $this->assertSame(1, $ds->get_search_min_length());
+    }
+
+    public function test_search_min_length_custom(): void
+    {
+        $ds = new DataSet(StubTableMeta::users());
+        $ds->search_min_length(3);
+        $this->assertSame(3, $ds->get_search_min_length());
+    }
+
+    public function test_get_searchable_columns(): void
+    {
+        $ds = new DataSet(StubTableMeta::users());
+        $ds->columns(['id', 'name', 'email', 'created_at']);
+        $ds->column('name')->searchable(true);
+        $ds->column('email')->searchable(true);
+
+        $this->assertSame(['name', 'email'], $ds->get_searchable_columns());
+    }
+
+    public function test_get_searchable_columns_empty(): void
+    {
+        $ds = new DataSet(StubTableMeta::users());
+        $this->assertSame([], $ds->get_searchable_columns());
+    }
 }

@@ -19,33 +19,26 @@ use Italix\DataSets\Drivers\DriverInterface;
  * Driver for the Tabulator JS library (https://tabulator.info).
  *
  * Translates DataSet/DataTree configuration into Tabulator's JSON
- * initialization options.
- *
- * Example output:
- *
- *     {
- *         "columns": [
- *             {"title": "Name", "field": "name", "sorter": "string", ...},
- *             {"title": "Email", "field": "email", "sorter": "string", ...}
- *         ],
- *         "ajaxURL": "/api/users",
- *         "pagination": true,
- *         "paginationMode": "remote",
- *         "paginationSize": 25,
- *         "sortMode": "remote",
- *         "filterMode": "remote",
- *         "layout": "fitColumns"
- *     }
+ * initialization options plus a JS bootstrap snippet that wires up
+ * the AJAX request/response mapping for server-side processing.
  *
  * Usage:
  *
  *     $driver = new TabulatorDriver();
  *     $config = $driver->render($dataset);
+ *     $js     = $driver->render_script($dataset, '#my-table');
  *
  *     // In your template:
  *     // <div id="my-table"></div>
+ *     // <script><?= $js ?></script>
+ *
+ * Or manually with JSON config:
+ *
+ *     // <div id="my-table"></div>
  *     // <script>
- *     //   new Tabulator("#my-table", <?= json_encode($config) ?>);
+ *     //   var config = <?= json_encode($config) ?>;
+ *     //   config.ajaxRequestFunc = ItalixDataSets.tabulatorAjax(config);
+ *     //   new Tabulator("#my-table", config);
  *     // </script>
  */
 class TabulatorDriver implements DriverInterface
@@ -94,6 +87,9 @@ class TabulatorDriver implements DriverInterface
             $config['height'] = $dataset->get_height();
         }
 
+        // Search / filtering metadata (used by the JS bootstrap)
+        $config = array_merge($config, $this->build_search_config($dataset));
+
         // Tree mode
         if ($dataset->is_tree() && $dataset instanceof DataTree) {
             $config = array_merge($config, $this->build_tree_config($dataset));
@@ -105,6 +101,139 @@ class TabulatorDriver implements DriverInterface
         }
 
         return $config;
+    }
+
+    /**
+     * Render a complete JS snippet that initializes a Tabulator table.
+     *
+     * The snippet creates the Tabulator instance with proper AJAX request
+     * mapping so that sort/page/search/filter params are sent in the format
+     * expected by ServerSideRequest, and responses are parsed from the
+     * ServerSideResponse format.
+     *
+     * @param DataSet $dataset
+     * @param string $selector CSS selector for the container element (e.g. '#my-table')
+     * @param string|null $var_name JS variable name for the table instance (null = no variable)
+     * @return string JavaScript code
+     */
+    public function render_script(DataSet $dataset, string $selector, ?string $var_name = null): string
+    {
+        $config = $this->render($dataset);
+        $config_json = json_encode($config, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
+
+        $var_assignment = $var_name !== null ? "var {$var_name} = " : '';
+        $searchable_columns = json_encode($dataset->get_searchable_columns());
+        $debounce = $dataset->get_search_debounce();
+        $min_length = $dataset->get_search_min_length();
+        $has_search = $dataset->has_global_search() ? 'true' : 'false';
+
+        $js = <<<JS
+(function() {
+    var config = {$config_json};
+
+    var _searchValue = "";
+    var _searchableColumns = {$searchable_columns};
+    var _debounce = {$debounce};
+    var _minLength = {$min_length};
+    var _hasGlobalSearch = {$has_search};
+
+    // Map Tabulator's AJAX request to ServerSideRequest format
+    config.ajaxRequestFunc = function(url, config, params) {
+        var queryParams = {};
+
+        // Pagination
+        if (params.page !== undefined) {
+            queryParams.page = params.page;
+        }
+        if (params.size !== undefined) {
+            queryParams.per_page = params.size;
+        }
+
+        // Sorting (Tabulator sends sorters as array)
+        if (params.sorters && params.sorters.length > 0) {
+            queryParams.sort = params.sorters[0].field;
+            queryParams.sort_dir = params.sorters[0].dir;
+        }
+
+        // Column filters (from headerFilter)
+        if (params.filters && params.filters.length > 0) {
+            queryParams.filters = {};
+            for (var i = 0; i < params.filters.length; i++) {
+                queryParams.filters[params.filters[i].field] = params.filters[i].value;
+            }
+        }
+
+        // Global search
+        if (_searchValue && _searchValue.length >= _minLength) {
+            queryParams.search = _searchValue;
+            queryParams.search_columns = _searchableColumns;
+        }
+
+        // Build query string
+        var qs = [];
+        for (var key in queryParams) {
+            if (queryParams[key] !== null && typeof queryParams[key] === "object") {
+                for (var sub in queryParams[key]) {
+                    qs.push(encodeURIComponent(key) + "[" + encodeURIComponent(sub) + "]=" + encodeURIComponent(queryParams[key][sub]));
+                }
+            } else if (Array.isArray(queryParams[key])) {
+                for (var j = 0; j < queryParams[key].length; j++) {
+                    qs.push(encodeURIComponent(key) + "[]=" + encodeURIComponent(queryParams[key][j]));
+                }
+            } else {
+                qs.push(encodeURIComponent(key) + "=" + encodeURIComponent(queryParams[key]));
+            }
+        }
+
+        var fetchUrl = url + (url.indexOf("?") >= 0 ? "&" : "?") + qs.join("&");
+
+        return fetch(fetchUrl)
+            .then(function(response) { return response.json(); })
+            .then(function(data) {
+                // ServerSideResponse format -> Tabulator format
+                return { data: data.data, last_page: data.last_page };
+            });
+    };
+
+    {$var_assignment}new Tabulator("{$selector}", config);
+
+JS;
+
+        // Add global search input wiring if enabled
+        if ($dataset->has_global_search()) {
+            $placeholder = json_encode($dataset->get_search_placeholder() ?? 'Search...');
+            $selector_escaped = json_encode($selector);
+
+            $js .= <<<JS
+
+    // Global search input with debounce
+    var _searchTimer = null;
+    var _tableEl = document.querySelector({$selector_escaped});
+    if (_tableEl) {
+        var searchInput = document.createElement("input");
+        searchInput.type = "search";
+        searchInput.placeholder = {$placeholder};
+        searchInput.className = "italix-dataset-search";
+        _tableEl.parentNode.insertBefore(searchInput, _tableEl);
+
+        searchInput.addEventListener("input", function(e) {
+            clearTimeout(_searchTimer);
+            var val = e.target.value;
+            _searchTimer = setTimeout(function() {
+                _searchValue = val;
+                if (val.length >= _minLength || val.length === 0) {
+                    Tabulator.findTable({$selector_escaped})[0].setData();
+                }
+            }, _debounce);
+        });
+    }
+
+JS;
+        }
+
+        $js .= "})();\n";
+
+        return $js;
     }
 
     /**
@@ -188,9 +317,13 @@ class TabulatorDriver implements DriverInterface
             $def['cssClass'] = $col->get_css_class();
         }
 
-        // Header filter
+        // Header filter (column-level filtering)
         if ($col->get_header_filter() !== null) {
             $def['headerFilter'] = $col->get_header_filter();
+        } elseif ($col->is_searchable()) {
+            // Auto-add header filter for searchable columns
+            $def['headerFilter'] = 'input';
+            $def['headerFilterLiveFilter'] = true;
         }
 
         // Extra driver-specific options
@@ -223,8 +356,39 @@ class TabulatorDriver implements DriverInterface
             $config['ajaxParams'] = $dataset->get_ajax_params();
         }
 
-        // Map Tabulator's request params to our ServerSideRequest format
-        $config['ajaxURLGenerator'] = '@@TABULATOR_URL_GENERATOR@@';
+        return $config;
+    }
+
+    /**
+     * Build search/filter configuration.
+     *
+     * @param DataSet $dataset
+     * @return array
+     */
+    private function build_search_config(DataSet $dataset): array
+    {
+        $config = [];
+
+        // Debounce for header filters
+        if ($dataset->get_search_debounce() !== 300) {
+            $config['headerFilterLiveFilterDelay'] = $dataset->get_search_debounce();
+        }
+
+        // Store searchable columns metadata for the JS bootstrap
+        $searchable = $dataset->get_searchable_columns();
+        if (!empty($searchable)) {
+            $config['_searchableColumns'] = $searchable;
+        }
+
+        // Global search metadata
+        if ($dataset->has_global_search()) {
+            $config['_globalSearch'] = true;
+            if ($dataset->get_search_placeholder() !== null) {
+                $config['_searchPlaceholder'] = $dataset->get_search_placeholder();
+            }
+            $config['_searchMinLength'] = $dataset->get_search_min_length();
+            $config['_searchDebounce'] = $dataset->get_search_debounce();
+        }
 
         return $config;
     }

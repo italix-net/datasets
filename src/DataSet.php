@@ -88,6 +88,12 @@ class DataSet
     /** @var string|null Placeholder text for the global search input */
     private $search_placeholder = null;
 
+    /** @var int Debounce delay in milliseconds for search/filter inputs */
+    private $search_debounce = 300;
+
+    /** @var int Minimum characters before triggering a search */
+    private $search_min_length = 1;
+
     /** @var array Extra driver-specific options merged at the top level */
     private $extra = [];
 
@@ -332,6 +338,33 @@ class DataSet
     }
 
     /**
+     * Set the debounce delay for search/filter inputs.
+     *
+     * Controls how long to wait (in ms) after the user stops typing
+     * before sending an AJAX request. Prevents excessive requests.
+     *
+     * @param int $ms Delay in milliseconds (default: 300)
+     * @return self
+     */
+    public function search_debounce(int $ms): self
+    {
+        $this->search_debounce = $ms;
+        return $this;
+    }
+
+    /**
+     * Set the minimum number of characters before triggering a search.
+     *
+     * @param int $length Minimum characters (default: 1)
+     * @return self
+     */
+    public function search_min_length(int $length): self
+    {
+        $this->search_min_length = $length;
+        return $this;
+    }
+
+    /**
      * Set extra driver-specific options merged at the top level.
      *
      * @param array $options
@@ -433,6 +466,34 @@ class DataSet
     public function get_search_placeholder(): ?string
     {
         return $this->search_placeholder;
+    }
+
+    /** @return int */
+    public function get_search_debounce(): int
+    {
+        return $this->search_debounce;
+    }
+
+    /** @return int */
+    public function get_search_min_length(): int
+    {
+        return $this->search_min_length;
+    }
+
+    /**
+     * Get the list of searchable column names.
+     *
+     * @return string[]
+     */
+    public function get_searchable_columns(): array
+    {
+        $searchable = [];
+        foreach ($this->each_column() as $name => $col) {
+            if ($col->is_searchable()) {
+                $searchable[] = $name;
+            }
+        }
+        return $searchable;
     }
 
     /** @return array */

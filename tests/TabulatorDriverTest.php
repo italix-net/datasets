@@ -242,6 +242,233 @@ class TabulatorDriverTest extends TestCase
         $this->assertSame('datetime', $config['columns'][2]['sorter']);
     }
 
+    // =========================================================================
+    // Search / Filter Tests
+    // =========================================================================
+
+    public function test_searchable_column_gets_header_filter(): void
+    {
+        $ds = new DataSet(StubTableMeta::users());
+        $ds->columns(['name', 'email']);
+        $ds->column('name')->searchable(true);
+        $ds->column('email')->searchable(true);
+
+        $config = $this->driver->render($ds);
+
+        $this->assertSame('input', $config['columns'][0]['headerFilter']);
+        $this->assertTrue($config['columns'][0]['headerFilterLiveFilter']);
+        $this->assertSame('input', $config['columns'][1]['headerFilter']);
+    }
+
+    public function test_explicit_header_filter_overrides_searchable(): void
+    {
+        $ds = new DataSet(StubTableMeta::users());
+        $ds->columns(['name']);
+        $ds->column('name')->searchable(true)->header_filter('select');
+
+        $config = $this->driver->render($ds);
+
+        $this->assertSame('select', $config['columns'][0]['headerFilter']);
+        $this->assertArrayNotHasKey('headerFilterLiveFilter', $config['columns'][0]);
+    }
+
+    public function test_non_searchable_column_no_header_filter(): void
+    {
+        $ds = new DataSet(StubTableMeta::users());
+        $ds->columns(['id']);
+
+        $config = $this->driver->render($ds);
+
+        $this->assertArrayNotHasKey('headerFilter', $config['columns'][0]);
+    }
+
+    public function test_searchable_columns_metadata_in_config(): void
+    {
+        $ds = new DataSet(StubTableMeta::users());
+        $ds->columns(['name', 'email', 'created_at']);
+        $ds->column('name')->searchable(true);
+        $ds->column('email')->searchable(true);
+
+        $config = $this->driver->render($ds);
+
+        $this->assertSame(['name', 'email'], $config['_searchableColumns']);
+    }
+
+    public function test_no_searchable_columns_no_metadata(): void
+    {
+        $ds = new DataSet(StubTableMeta::users());
+        $ds->columns(['name']);
+
+        $config = $this->driver->render($ds);
+
+        $this->assertArrayNotHasKey('_searchableColumns', $config);
+    }
+
+    public function test_global_search_metadata(): void
+    {
+        $ds = new DataSet(StubTableMeta::users());
+        $ds->global_search(true, 'Search users...');
+        $ds->search_debounce(500);
+        $ds->search_min_length(3);
+
+        $config = $this->driver->render($ds);
+
+        $this->assertTrue($config['_globalSearch']);
+        $this->assertSame('Search users...', $config['_searchPlaceholder']);
+        $this->assertSame(3, $config['_searchMinLength']);
+        $this->assertSame(500, $config['_searchDebounce']);
+    }
+
+    public function test_no_global_search_no_metadata(): void
+    {
+        $ds = new DataSet(StubTableMeta::users());
+
+        $config = $this->driver->render($ds);
+
+        $this->assertArrayNotHasKey('_globalSearch', $config);
+    }
+
+    public function test_custom_debounce_in_header_filter_delay(): void
+    {
+        $ds = new DataSet(StubTableMeta::users());
+        $ds->search_debounce(500);
+
+        $config = $this->driver->render($ds);
+
+        $this->assertSame(500, $config['headerFilterLiveFilterDelay']);
+    }
+
+    public function test_default_debounce_no_header_filter_delay(): void
+    {
+        $ds = new DataSet(StubTableMeta::users());
+
+        $config = $this->driver->render($ds);
+
+        $this->assertArrayNotHasKey('headerFilterLiveFilterDelay', $config);
+    }
+
+    // =========================================================================
+    // render_script Tests
+    // =========================================================================
+
+    public function test_render_script_contains_tabulator_init(): void
+    {
+        $ds = new DataSet(StubTableMeta::users());
+        $ds->columns(['name']);
+        $ds->ajax_url('/api/users');
+
+        $js = $this->driver->render_script($ds, '#my-table');
+
+        $this->assertStringContainsString('new Tabulator("#my-table"', $js);
+        $this->assertStringContainsString('ajaxRequestFunc', $js);
+        $this->assertStringContainsString('/api/users', $js);
+    }
+
+    public function test_render_script_with_var_name(): void
+    {
+        $ds = new DataSet(StubTableMeta::users());
+        $ds->columns(['name']);
+
+        $js = $this->driver->render_script($ds, '#tbl', 'myTable');
+
+        $this->assertStringContainsString('var myTable = new Tabulator', $js);
+    }
+
+    public function test_render_script_maps_pagination_params(): void
+    {
+        $ds = new DataSet(StubTableMeta::users());
+        $ds->ajax_url('/api/users');
+
+        $js = $this->driver->render_script($ds, '#t');
+
+        $this->assertStringContainsString('queryParams.page = params.page', $js);
+        $this->assertStringContainsString('queryParams.per_page = params.size', $js);
+    }
+
+    public function test_render_script_maps_sort_params(): void
+    {
+        $ds = new DataSet(StubTableMeta::users());
+        $ds->ajax_url('/api/users');
+
+        $js = $this->driver->render_script($ds, '#t');
+
+        $this->assertStringContainsString('queryParams.sort = params.sorters[0].field', $js);
+        $this->assertStringContainsString('queryParams.sort_dir = params.sorters[0].dir', $js);
+    }
+
+    public function test_render_script_maps_filter_params(): void
+    {
+        $ds = new DataSet(StubTableMeta::users());
+        $ds->ajax_url('/api/users');
+
+        $js = $this->driver->render_script($ds, '#t');
+
+        $this->assertStringContainsString('queryParams.filters', $js);
+        $this->assertStringContainsString('params.filters[i].field', $js);
+    }
+
+    public function test_render_script_maps_search_params(): void
+    {
+        $ds = new DataSet(StubTableMeta::users());
+        $ds->columns(['name', 'email']);
+        $ds->column('name')->searchable(true);
+        $ds->column('email')->searchable(true);
+        $ds->ajax_url('/api/users');
+
+        $js = $this->driver->render_script($ds, '#t');
+
+        $this->assertStringContainsString('queryParams.search = _searchValue', $js);
+        $this->assertStringContainsString('queryParams.search_columns = _searchableColumns', $js);
+        $this->assertStringContainsString('"name","email"', $js);
+    }
+
+    public function test_render_script_parses_server_response(): void
+    {
+        $ds = new DataSet(StubTableMeta::users());
+        $ds->ajax_url('/api/users');
+
+        $js = $this->driver->render_script($ds, '#t');
+
+        $this->assertStringContainsString('data: data.data', $js);
+        $this->assertStringContainsString('last_page: data.last_page', $js);
+    }
+
+    public function test_render_script_global_search_creates_input(): void
+    {
+        $ds = new DataSet(StubTableMeta::users());
+        $ds->global_search(true, 'Find something...');
+        $ds->ajax_url('/api/users');
+
+        $js = $this->driver->render_script($ds, '#t');
+
+        $this->assertStringContainsString('italix-dataset-search', $js);
+        $this->assertStringContainsString('Find something...', $js);
+        $this->assertStringContainsString('Tabulator.findTable', $js);
+    }
+
+    public function test_render_script_no_global_search_no_input(): void
+    {
+        $ds = new DataSet(StubTableMeta::users());
+        $ds->ajax_url('/api/users');
+
+        $js = $this->driver->render_script($ds, '#t');
+
+        $this->assertStringNotContainsString('italix-dataset-search', $js);
+    }
+
+    public function test_render_script_debounce_and_min_length(): void
+    {
+        $ds = new DataSet(StubTableMeta::users());
+        $ds->search_debounce(500);
+        $ds->search_min_length(3);
+        $ds->ajax_url('/api/users');
+
+        $js = $this->driver->render_script($ds, '#t');
+
+        $this->assertStringContainsString('var _debounce = 500', $js);
+        $this->assertStringContainsString('var _minLength = 3', $js);
+    }
+
     public function test_render_extra_at_dataset_level(): void
     {
         $ds = new DataSet(StubTableMeta::users());

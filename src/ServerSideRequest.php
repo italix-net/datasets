@@ -149,6 +149,23 @@ class ServerSideRequest
         return (string)$q;
     }
 
+    /**
+     * Get the columns to apply the global search to.
+     *
+     * The JS bootstrap sends these as search_columns[]=name&search_columns[]=email.
+     * If not provided, the backend should search all searchable columns.
+     *
+     * @return string[]
+     */
+    public function search_columns(): array
+    {
+        $columns = $this->params['search_columns'] ?? [];
+        if (!is_array($columns)) {
+            return [];
+        }
+        return array_values(array_filter($columns, 'is_string'));
+    }
+
     // =========================================================================
     // Filtering
     // =========================================================================
