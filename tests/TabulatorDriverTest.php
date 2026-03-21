@@ -443,7 +443,7 @@ class TabulatorDriverTest extends TestCase
 
         $this->assertStringContainsString('italix-dataset-search', $js);
         $this->assertStringContainsString('Find something...', $js);
-        $this->assertStringContainsString('Tabulator.findTable', $js);
+        $this->assertStringContainsString('setData()', $js);
     }
 
     public function test_render_script_no_global_search_no_input(): void
@@ -541,6 +541,363 @@ class TabulatorDriverTest extends TestCase
         $this->assertTrue($config['dataTree']);
         $this->assertSame('/api/categories', $config['ajaxURL']);
         $this->assertSame('remote', $config['sortMode']);
+    }
+
+    // =========================================================================
+    // Multi-column Sorting
+    // =========================================================================
+
+    public function test_render_multi_sort(): void
+    {
+        $ds = new DataSet(StubTableMeta::users());
+        $ds->default_sort('name', 'asc');
+        $ds->default_sort('created_at', 'desc');
+
+        $config = $this->driver->render($ds);
+
+        $this->assertCount(2, $config['initialSort']);
+        $this->assertSame('name', $config['initialSort'][0]['column']);
+        $this->assertSame('asc', $config['initialSort'][0]['dir']);
+        $this->assertSame('created_at', $config['initialSort'][1]['column']);
+        $this->assertSame('desc', $config['initialSort'][1]['dir']);
+    }
+
+    public function test_render_script_multi_sort_sends_sorts_array(): void
+    {
+        $ds = new DataSet(StubTableMeta::users());
+        $ds->ajax_url('/api/users');
+
+        $js = $this->driver->render_script($ds, '#t');
+
+        $this->assertStringContainsString('queryParams.sorts = params.sorters.map', $js);
+    }
+
+    // =========================================================================
+    // Action Column
+    // =========================================================================
+
+    public function test_render_action_column_metadata(): void
+    {
+        $ds = new DataSet(StubTableMeta::users());
+        $ds->columns(['name']);
+        $ds->action_column()->button('edit', 'Edit')->css_class('btn');
+        $ds->action_column()->button('delete', 'Delete')->confirm('Sure?');
+
+        $config = $this->driver->render($ds);
+
+        $this->assertArrayHasKey('_actionColumn', $config);
+        $this->assertCount(2, $config['_actionColumn']['buttons']);
+        $this->assertSame('edit', $config['_actionColumn']['buttons'][0]['name']);
+        $this->assertSame('delete', $config['_actionColumn']['buttons'][1]['name']);
+    }
+
+    public function test_render_action_column_at_end(): void
+    {
+        $ds = new DataSet(StubTableMeta::users());
+        $ds->columns(['name']);
+        $ds->action_column()->button('edit', 'Edit');
+
+        $config = $this->driver->render($ds);
+
+        // Action column should be the last column
+        $last = end($config['columns']);
+        $this->assertSame('_actions', $last['field']);
+        $this->assertSame('Actions', $last['title']);
+        $this->assertFalse($last['headerSort']);
+    }
+
+    public function test_render_action_column_at_start(): void
+    {
+        $ds = new DataSet(StubTableMeta::users());
+        $ds->columns(['name']);
+        $ds->action_column()->position('start')->button('edit', 'Edit');
+
+        $config = $this->driver->render($ds);
+
+        // Action column should be the first column
+        $this->assertSame('_actions', $config['columns'][0]['field']);
+    }
+
+    public function test_render_action_column_frozen(): void
+    {
+        $ds = new DataSet(StubTableMeta::users());
+        $ds->columns(['name']);
+        $ds->action_column()->frozen(true)->button('edit', 'Edit');
+
+        $config = $this->driver->render($ds);
+
+        $last = end($config['columns']);
+        $this->assertTrue($last['frozen']);
+    }
+
+    public function test_render_action_column_custom_width(): void
+    {
+        $ds = new DataSet(StubTableMeta::users());
+        $ds->columns(['name']);
+        $ds->action_column()->width('150px')->button('edit', 'Edit');
+
+        $config = $this->driver->render($ds);
+
+        $last = end($config['columns']);
+        $this->assertSame('150px', $last['width']);
+    }
+
+    public function test_render_no_action_column_when_no_buttons(): void
+    {
+        $ds = new DataSet(StubTableMeta::users());
+        $ds->columns(['name']);
+
+        $config = $this->driver->render($ds);
+
+        $this->assertArrayNotHasKey('_actionColumn', $config);
+        // Only data columns, no action column
+        $this->assertCount(1, $config['columns']);
+    }
+
+    public function test_render_script_action_column_formatter(): void
+    {
+        $ds = new DataSet(StubTableMeta::users());
+        $ds->columns(['name']);
+        $ds->action_column()->button('edit', 'Edit');
+        $ds->on('edit', 'onEdit');
+
+        $js = $this->driver->render_script($ds, '#t');
+
+        $this->assertStringContainsString('_actionFormatter', $js);
+        $this->assertStringContainsString('data-action', $js);
+        $this->assertStringContainsString('@@ACTION_FORMATTER@@', $js);
+    }
+
+    public function test_render_script_action_column_confirm(): void
+    {
+        $ds = new DataSet(StubTableMeta::users());
+        $ds->columns(['name']);
+        $ds->action_column()->button('delete', 'Delete')->confirm('Are you sure?');
+
+        $js = $this->driver->render_script($ds, '#t');
+
+        $this->assertStringContainsString('_actionConfirms', $js);
+        $this->assertStringContainsString('Are you sure?', $js);
+    }
+
+    // =========================================================================
+    // Toolbar
+    // =========================================================================
+
+    public function test_render_toolbar_metadata(): void
+    {
+        $ds = new DataSet(StubTableMeta::users());
+        $ds->toolbar()->button('add', 'Add New', 'none');
+        $ds->toolbar()->button('delete', 'Delete Selected', 'selected');
+
+        $config = $this->driver->render($ds);
+
+        $this->assertArrayHasKey('_toolbar', $config);
+        $this->assertCount(2, $config['_toolbar']['buttons']);
+        $this->assertSame('none', $config['_toolbar']['buttons'][0]['scope']);
+        $this->assertSame('selected', $config['_toolbar']['buttons'][1]['scope']);
+    }
+
+    public function test_render_no_toolbar_when_not_set(): void
+    {
+        $ds = new DataSet(StubTableMeta::users());
+
+        $config = $this->driver->render($ds);
+
+        $this->assertArrayNotHasKey('_toolbar', $config);
+    }
+
+    public function test_render_script_toolbar_creates_dom(): void
+    {
+        $ds = new DataSet(StubTableMeta::users());
+        $ds->toolbar()->button('add', 'Add', 'none');
+        $ds->on('add', 'onAdd');
+
+        $js = $this->driver->render_script($ds, '#t');
+
+        $this->assertStringContainsString('_createToolbar', $js);
+        $this->assertStringContainsString('data-toolbar-action', $js);
+        $this->assertStringContainsString('data-scope', $js);
+    }
+
+    public function test_render_script_toolbar_position_top(): void
+    {
+        $ds = new DataSet(StubTableMeta::users());
+        $ds->toolbar()->position('top')->button('add', 'Add', 'none');
+        $ds->on('add', 'onAdd');
+
+        $js = $this->driver->render_script($ds, '#t');
+
+        $this->assertStringContainsString('if (true) _createToolbar(_tableEl, true)', $js);
+        $this->assertStringContainsString('if (false) _createToolbar(_tableEl, false)', $js);
+    }
+
+    public function test_render_script_toolbar_position_both(): void
+    {
+        $ds = new DataSet(StubTableMeta::users());
+        $ds->toolbar()->position('both')->button('add', 'Add', 'none');
+        $ds->on('add', 'onAdd');
+
+        $js = $this->driver->render_script($ds, '#t');
+
+        $this->assertStringContainsString('if (true) _createToolbar(_tableEl, true)', $js);
+        $this->assertStringContainsString('if (true) _createToolbar(_tableEl, false)', $js);
+    }
+
+    public function test_render_script_toolbar_selected_scope(): void
+    {
+        $ds = new DataSet(StubTableMeta::users());
+        $ds->selectable(true);
+        $ds->toolbar()->button('delete', 'Delete', 'selected');
+        $ds->on('delete', 'onDelete');
+
+        $js = $this->driver->render_script($ds, '#t');
+
+        $this->assertStringContainsString('getSelectedData', $js);
+    }
+
+    public function test_render_script_toolbar_all_scope(): void
+    {
+        $ds = new DataSet(StubTableMeta::users());
+        $ds->toolbar()->button('export', 'Export', 'all');
+        $ds->on('export', 'onExport');
+
+        $js = $this->driver->render_script($ds, '#t');
+
+        $this->assertStringContainsString('getData', $js);
+    }
+
+    // =========================================================================
+    // Row Selection
+    // =========================================================================
+
+    public function test_render_selectable_checkbox(): void
+    {
+        $ds = new DataSet(StubTableMeta::users());
+        $ds->columns(['name']);
+        $ds->selectable(true);
+
+        $config = $this->driver->render($ds);
+
+        $this->assertTrue($config['selectable']);
+        // Checkbox column should be first
+        $this->assertSame('rowSelection', $config['columns'][0]['formatter']);
+        $this->assertSame('rowSelection', $config['columns'][0]['titleFormatter']);
+        $this->assertTrue($config['columns'][0]['frozen']);
+    }
+
+    public function test_render_selectable_highlight(): void
+    {
+        $ds = new DataSet(StubTableMeta::users());
+        $ds->columns(['name']);
+        $ds->selectable('highlight');
+
+        $config = $this->driver->render($ds);
+
+        $this->assertTrue($config['selectable']);
+        $this->assertSame('click', $config['selectableRangeMode']);
+        // No checkbox column for highlight mode
+        $this->assertSame('name', $config['columns'][0]['field']);
+    }
+
+    public function test_render_not_selectable_no_config(): void
+    {
+        $ds = new DataSet(StubTableMeta::users());
+        $ds->columns(['name']);
+
+        $config = $this->driver->render($ds);
+
+        $this->assertArrayNotHasKey('selectable', $config);
+        $this->assertArrayNotHasKey('selectableRangeMode', $config);
+    }
+
+    public function test_render_script_checkbox_toggle(): void
+    {
+        $ds = new DataSet(StubTableMeta::users());
+        $ds->selectable(true);
+
+        $js = $this->driver->render_script($ds, '#t');
+
+        $this->assertStringContainsString('@@ROW_TOGGLE_SELECT@@', $js);
+        $this->assertStringContainsString('toggleSelect', $js);
+    }
+
+    // =========================================================================
+    // Events
+    // =========================================================================
+
+    public function test_render_events_metadata(): void
+    {
+        $ds = new DataSet(StubTableMeta::users());
+        $ds->on('row_click', 'onRowClick');
+        $ds->on('edit', 'onEdit');
+
+        $config = $this->driver->render($ds);
+
+        $this->assertArrayHasKey('_events', $config);
+        $this->assertSame('onRowClick', $config['_events']['row_click']);
+        $this->assertSame('onEdit', $config['_events']['edit']);
+    }
+
+    public function test_render_no_events_when_empty(): void
+    {
+        $ds = new DataSet(StubTableMeta::users());
+
+        $config = $this->driver->render($ds);
+
+        $this->assertArrayNotHasKey('_events', $config);
+    }
+
+    public function test_render_script_row_click_event(): void
+    {
+        $ds = new DataSet(StubTableMeta::users());
+        $ds->on('row_click', 'onRowClick');
+
+        $js = $this->driver->render_script($ds, '#t');
+
+        $this->assertStringContainsString('config.rowClick', $js);
+        $this->assertStringContainsString('onRowClick', $js);
+    }
+
+    public function test_render_script_row_dbl_click_event(): void
+    {
+        $ds = new DataSet(StubTableMeta::users());
+        $ds->on('row_dbl_click', 'onDblClick');
+
+        $js = $this->driver->render_script($ds, '#t');
+
+        $this->assertStringContainsString('config.rowDblClick', $js);
+        $this->assertStringContainsString('onDblClick', $js);
+    }
+
+    public function test_render_script_no_row_events_when_not_set(): void
+    {
+        $ds = new DataSet(StubTableMeta::users());
+
+        $js = $this->driver->render_script($ds, '#t');
+
+        $this->assertStringNotContainsString('config.rowClick', $js);
+        $this->assertStringNotContainsString('config.rowDblClick', $js);
+    }
+
+    // =========================================================================
+    // Combined features
+    // =========================================================================
+
+    public function test_render_selectable_with_action_column(): void
+    {
+        $ds = new DataSet(StubTableMeta::users());
+        $ds->columns(['name', 'email']);
+        $ds->selectable(true);
+        $ds->action_column()->button('edit', 'Edit');
+
+        $config = $this->driver->render($ds);
+
+        // Checkbox column first, then data columns, then action column
+        $this->assertSame('rowSelection', $config['columns'][0]['formatter']);
+        $this->assertSame('name', $config['columns'][1]['field']);
+        $this->assertSame('email', $config['columns'][2]['field']);
+        $this->assertSame('_actions', $config['columns'][3]['field']);
     }
 
     // =========================================================================

@@ -4,8 +4,10 @@ declare(strict_types=1);
 
 namespace Italix\DataSets\Tests;
 
+use Italix\DataSets\ActionColumn;
 use Italix\DataSets\DataSet;
 use Italix\DataSets\DataSetColumn;
+use Italix\DataSets\Toolbar;
 use Italix\DataSets\Tests\Fixtures\StubTableMeta;
 use InvalidArgumentException;
 use PHPUnit\Framework\TestCase;
@@ -118,14 +120,50 @@ class DataSetTest extends TestCase
         $this->assertSame([25, 50, 100, 200], $ds->get_page_sizes());
     }
 
-    public function test_default_sort(): void
+    // =========================================================================
+    // Multi-column Sorting
+    // =========================================================================
+
+    public function test_default_sort_single(): void
     {
         $ds = new DataSet(StubTableMeta::users());
         $ds->default_sort('name', 'desc');
 
         $this->assertSame('name', $ds->get_default_sort_column());
         $this->assertSame('desc', $ds->get_default_sort_direction());
+        $this->assertCount(1, $ds->get_default_sorts());
     }
+
+    public function test_default_sort_multi(): void
+    {
+        $ds = new DataSet(StubTableMeta::users());
+        $ds->default_sort('name', 'asc');
+        $ds->default_sort('created_at', 'desc');
+
+        $sorts = $ds->get_default_sorts();
+        $this->assertCount(2, $sorts);
+        $this->assertSame('name', $sorts[0]['column']);
+        $this->assertSame('asc', $sorts[0]['direction']);
+        $this->assertSame('created_at', $sorts[1]['column']);
+        $this->assertSame('desc', $sorts[1]['direction']);
+
+        // Backwards compat: returns first sort
+        $this->assertSame('name', $ds->get_default_sort_column());
+        $this->assertSame('asc', $ds->get_default_sort_direction());
+    }
+
+    public function test_no_default_sort(): void
+    {
+        $ds = new DataSet(StubTableMeta::users());
+
+        $this->assertNull($ds->get_default_sort_column());
+        $this->assertSame('asc', $ds->get_default_sort_direction());
+        $this->assertSame([], $ds->get_default_sorts());
+    }
+
+    // =========================================================================
+    // Display
+    // =========================================================================
 
     public function test_display_options(): void
     {
@@ -155,6 +193,10 @@ class DataSetTest extends TestCase
             $ds->get_extra()
         );
     }
+
+    // =========================================================================
+    // Search
+    // =========================================================================
 
     public function test_search_debounce_default(): void
     {
@@ -196,5 +238,120 @@ class DataSetTest extends TestCase
     {
         $ds = new DataSet(StubTableMeta::users());
         $this->assertSame([], $ds->get_searchable_columns());
+    }
+
+    // =========================================================================
+    // Action Column
+    // =========================================================================
+
+    public function test_action_column(): void
+    {
+        $ds = new DataSet(StubTableMeta::users());
+        $ac = $ds->action_column();
+
+        $this->assertInstanceOf(ActionColumn::class, $ac);
+        $this->assertSame($ac, $ds->action_column()); // same instance
+    }
+
+    public function test_has_action_column(): void
+    {
+        $ds = new DataSet(StubTableMeta::users());
+        $this->assertFalse($ds->has_action_column());
+
+        $ds->action_column()->button('edit', 'Edit');
+        $this->assertTrue($ds->has_action_column());
+    }
+
+    public function test_get_action_column_null_when_not_set(): void
+    {
+        $ds = new DataSet(StubTableMeta::users());
+        $this->assertNull($ds->get_action_column());
+    }
+
+    // =========================================================================
+    // Toolbar
+    // =========================================================================
+
+    public function test_toolbar(): void
+    {
+        $ds = new DataSet(StubTableMeta::users());
+        $tb = $ds->toolbar();
+
+        $this->assertInstanceOf(Toolbar::class, $tb);
+        $this->assertSame($tb, $ds->toolbar()); // same instance
+    }
+
+    public function test_has_toolbar(): void
+    {
+        $ds = new DataSet(StubTableMeta::users());
+        $this->assertFalse($ds->has_toolbar());
+
+        $ds->toolbar()->button('add', 'Add', 'none');
+        $this->assertTrue($ds->has_toolbar());
+    }
+
+    public function test_get_toolbar_null_when_not_set(): void
+    {
+        $ds = new DataSet(StubTableMeta::users());
+        $this->assertNull($ds->get_toolbar());
+    }
+
+    // =========================================================================
+    // Row Selection
+    // =========================================================================
+
+    public function test_selectable_default(): void
+    {
+        $ds = new DataSet(StubTableMeta::users());
+        $this->assertFalse($ds->is_selectable());
+        $this->assertFalse($ds->get_selectable());
+    }
+
+    public function test_selectable_checkbox(): void
+    {
+        $ds = new DataSet(StubTableMeta::users());
+        $ds->selectable(true);
+
+        $this->assertTrue($ds->is_selectable());
+        $this->assertTrue($ds->get_selectable());
+    }
+
+    public function test_selectable_highlight(): void
+    {
+        $ds = new DataSet(StubTableMeta::users());
+        $ds->selectable('highlight');
+
+        $this->assertTrue($ds->is_selectable());
+        $this->assertSame('highlight', $ds->get_selectable());
+    }
+
+    // =========================================================================
+    // Events
+    // =========================================================================
+
+    public function test_on_event(): void
+    {
+        $ds = new DataSet(StubTableMeta::users());
+        $ds->on('row_click', 'onRowClick');
+        $ds->on('edit', 'onEditRow');
+
+        $events = $ds->get_events();
+        $this->assertSame('onRowClick', $events['row_click']);
+        $this->assertSame('onEditRow', $events['edit']);
+    }
+
+    public function test_get_event_callback(): void
+    {
+        $ds = new DataSet(StubTableMeta::users());
+        $ds->on('edit', 'onEdit');
+
+        $this->assertSame('onEdit', $ds->get_event_callback('edit'));
+        $this->assertNull($ds->get_event_callback('nonexistent'));
+    }
+
+    public function test_events_empty_by_default(): void
+    {
+        $ds = new DataSet(StubTableMeta::users());
+        $this->assertSame([], $ds->get_events());
     }
 }
