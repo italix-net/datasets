@@ -15,6 +15,8 @@ declare(strict_types=1);
 
 namespace Italix\DataSets;
 
+use Italix\Contracts\DataContainer;
+
 /**
  * Parses server-side datatable request parameters.
  *
@@ -69,6 +71,17 @@ class ServerSideRequest
     public static function from_array(array $params): self
     {
         return new self($params);
+    }
+
+    /**
+     * Create from a DataContainer (e.g. from RequestInput::get()).
+     *
+     * @param DataContainer $data
+     * @return self
+     */
+    public static function from(DataContainer $data): self
+    {
+        return new self($data->to_array());
     }
 
     // =========================================================================
@@ -147,7 +160,31 @@ class ServerSideRequest
             return $sorts[0]['direction'];
         }
 
-        $dir = strtolower($this->params['sort_dir'] ?? $this->params['sort_direction'] ?? $default);
+        $dir = self::direction_code($this->params['sort_dir'] ?? $this->params['sort_direction'] ?? $default, $default);
+
+        return $dir;
+    }
+
+    /**
+     * Normalise anything at all into `asc` or `desc`.
+     *
+     * The input is whatever was in the query string, and a query string can
+     * hold an array: `?sort_dir[]=asc` is a URL anybody can type, and it
+     * reached `strtolower()` as an array and threw a TypeError — a 500 on
+     * demand. Non-scalars are refused here rather than cast, because casting an
+     * array to string yields the literal word "Array", which is not a
+     * direction either but fails much later and much less clearly.
+     *
+     * @param mixed $value
+     */
+    private static function direction_code($value, string $default): string
+    {
+        if (!is_scalar($value)) {
+            return $default;
+        }
+
+        $dir = strtolower((string) $value);
+
         return in_array($dir, ['asc', 'desc'], true) ? $dir : $default;
     }
 
@@ -171,13 +208,15 @@ class ServerSideRequest
             if (!is_array($sort) || !isset($sort['field'])) {
                 continue;
             }
-            $dir = strtolower($sort['dir'] ?? 'asc');
-            if (!in_array($dir, ['asc', 'desc'], true)) {
-                $dir = 'asc';
+            // A field sent as `sort[0][field][]=x` arrives as an array, and
+            // casting one to string is a warning plus the word "Array".
+            if (!is_scalar($sort['field'])) {
+                continue;
             }
+
             $result[] = [
-                'column' => (string)$sort['field'],
-                'direction' => $dir,
+                'column' => (string) $sort['field'],
+                'direction' => self::direction_code($sort['dir'] ?? 'asc', 'asc'),
             ];
         }
 

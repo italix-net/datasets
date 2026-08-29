@@ -62,7 +62,7 @@ class DataSetColumn
     private $formatter_params = [];
 
     /** @var string|null Horizontal alignment: 'left', 'center', 'right' */
-    private $h_align = null;
+    private $horizontal_align = null;
 
     /** @var string|null Header alignment: 'left', 'center', 'right' */
     private $header_align = null;
@@ -78,6 +78,52 @@ class DataSetColumn
 
     /** @var string|null Header filter type (e.g. 'input', 'select', 'number') */
     private $header_filter = null;
+
+    /**
+     * Responsive hide priority.
+     *
+     * When the table uses a responsive layout mode, this controls the order in
+     * which columns are hidden when horizontal space is insufficient.
+     *
+     *   null         — not set; driver uses its own default (column stays visible)
+     *   false        — never hide this column (maps to priority 0 in Tabulator)
+     *   int (1-N)    — hide priority; higher values are hidden first
+     *
+     * @var int|false|null
+     */
+    private $responsive_priority = null;
+
+    /**
+     * Whether to show this column in the card layout.
+     *
+     *   null  — inherit from is_visible() (default)
+     *   true  — always show in card, even if visible(false) in the table
+     *   false — never show in card, even if visible in the table
+     *
+     * @var bool|null
+     */
+    private $card_visible = null;
+
+    /**
+     * Display order within the card layout body.
+     *
+     * Lower values appear first. Columns without an explicit order are placed
+     * after those with a card_order, in their original definition order.
+     *
+     * @var int|null
+     */
+    private $card_order = null;
+
+    /**
+     * Multi-line cell definition for compound columns.
+     *
+     * Each line: ['field' => string, 'style' => 'title'|'subtitle'|'plain', 'label' => string (optional)].
+     * Fields referenced here do not need their own DataSetColumn entry — they just
+     * need to be present in the AJAX JSON response.
+     *
+     * @var array|null  [{field, style, ?label}, ...]
+     */
+    private $cell_lines = null;
 
     /** @var array Extra driver-specific options */
     private $extra = [];
@@ -186,9 +232,9 @@ class DataSetColumn
      * @param string $align 'left', 'center', or 'right'
      * @return self
      */
-    public function h_align(string $align): self
+    public function horizontal_align(string $align): self
     {
-        $this->h_align = $align;
+        $this->horizontal_align = $align;
         return $this;
     }
 
@@ -249,6 +295,88 @@ class DataSetColumn
     public function header_filter(string $type): self
     {
         $this->header_filter = $type;
+        return $this;
+    }
+
+    /**
+     * Set the responsive hide priority for this column.
+     *
+     * When the table uses a responsive layout mode, columns with a higher
+     * priority value are hidden first. Set to false to pin the column so it
+     * is never hidden regardless of available space.
+     *
+     * Common convention:
+     *   false   — always visible (pin; e.g. primary name, action buttons)
+     *   1       — hide last among deprioritised columns
+     *   2       — hide before priority-1 columns
+     *   3+      — hide first (e.g. internal IDs, secondary metadata)
+     *
+     * @param int|false $priority
+     * @return self
+     */
+    public function responsive($priority): self
+    {
+        $this->responsive_priority = $priority;
+        return $this;
+    }
+
+    /**
+     * Set card layout visibility for this column.
+     *
+     * Overrides the default behaviour (which inherits from visible()).
+     * Use card_visible(false) to hide a column from card view while keeping
+     * it in the table, or card_visible(true) to show it in the card even if
+     * it is hidden in the table (value will be raw, unformatted).
+     *
+     * @param bool $v
+     * @return self
+     */
+    public function card_visible(bool $v): self
+    {
+        $this->card_visible = $v;
+        return $this;
+    }
+
+    /**
+     * Set the display order of this column within the card layout body.
+     *
+     * Lower values appear first. Columns without a card_order are placed
+     * after explicitly ordered ones, in their original definition order.
+     *
+     * @param int $order
+     * @return self
+     */
+    public function card_order(int $order): self
+    {
+        $this->card_order = $order;
+        return $this;
+    }
+
+    /**
+     * Define multi-line cell rendering for this column.
+     *
+     * Renders multiple data fields stacked vertically within a single cell.
+     * Useful for composite columns such as "buyer" (name + email + phone).
+     *
+     * Each line definition:
+     *   'field' => string                      — data field name (must be in AJAX response)
+     *   'style' => 'title'|'subtitle'|'plain'  — visual weight
+     *   'label' => string  (optional)          — label shown in card expansion;
+     *                                            if omitted: first line uses column label,
+     *                                            subsequent lines use no label
+     *
+     * Note: fields referenced here do not need their own DataSetColumn — they just
+     * need to be in the SQL SELECT (as aliases) and returned in the AJAX JSON.
+     *
+     * Note: avoid setting a fixed table height() when using cell_lines, as Tabulator
+     * auto-sizes row heights by default and a fixed height will clip multi-line cells.
+     *
+     * @param array $lines
+     * @return self
+     */
+    public function cell_lines(array $lines): self
+    {
+        $this->cell_lines = $lines;
         return $this;
     }
 
@@ -363,9 +491,9 @@ class DataSetColumn
     /**
      * @return string|null
      */
-    public function get_h_align(): ?string
+    public function get_horizontal_align(): ?string
     {
-        return $this->h_align;
+        return $this->horizontal_align;
     }
 
     /**
@@ -409,6 +537,49 @@ class DataSetColumn
     }
 
     /**
+     * Get the responsive hide priority (null = not set).
+     *
+     * Untyped on purpose: an `int|false|null` union would raise this package's
+     * floor to PHP 8.0 for one return type. The docblock says the same thing.
+     *
+     * @return int|false|null
+     */
+    public function get_responsive_priority()
+    {
+        return $this->responsive_priority;
+    }
+
+    /**
+     * Get the card layout visibility override (null = inherit from visible()).
+     *
+     * @return bool|null
+     */
+    public function get_card_visible(): ?bool
+    {
+        return $this->card_visible;
+    }
+
+    /**
+     * Get the explicit card layout display order (null = use definition order).
+     *
+     * @return int|null
+     */
+    public function get_card_order(): ?int
+    {
+        return $this->card_order;
+    }
+
+    /**
+     * Get the multi-line cell definition, or null if not set.
+     *
+     * @return array|null
+     */
+    public function get_cell_lines(): ?array
+    {
+        return $this->cell_lines;
+    }
+
+    /**
      * @return array
      */
     public function get_extra(): array
@@ -447,8 +618,8 @@ class DataSetColumn
                 $result['formatter_params'] = $this->formatter_params;
             }
         }
-        if ($this->h_align !== null) {
-            $result['h_align'] = $this->h_align;
+        if ($this->horizontal_align !== null) {
+            $result['horizontal_align'] = $this->horizontal_align;
         }
         if ($this->header_align !== null) {
             $result['header_align'] = $this->header_align;
@@ -464,6 +635,18 @@ class DataSetColumn
         }
         if ($this->header_filter !== null) {
             $result['header_filter'] = $this->header_filter;
+        }
+        if ($this->responsive_priority !== null) {
+            $result['responsive_priority'] = $this->responsive_priority;
+        }
+        if ($this->card_visible !== null) {
+            $result['card_visible'] = $this->card_visible;
+        }
+        if ($this->card_order !== null) {
+            $result['card_order'] = $this->card_order;
+        }
+        if ($this->cell_lines !== null) {
+            $result['cell_lines'] = $this->cell_lines;
         }
         if (!empty($this->extra)) {
             $result['extra'] = $this->extra;
