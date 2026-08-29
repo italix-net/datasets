@@ -356,7 +356,7 @@ class DataSetColumn
      * Define multi-line cell rendering for this column.
      *
      * Renders multiple data fields stacked vertically within a single cell.
-     * Useful for composite columns such as "buyer" (name + email + phone).
+     * Useful for composite columns such as "customer" (name + email + phone).
      *
      * Each line definition:
      *   'field' => string                      — data field name (must be in AJAX response)

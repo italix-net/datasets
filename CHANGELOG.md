@@ -1,5 +1,13 @@
 # Changelog — italix/datasets
 
+## [2.1.1] — 2026-08-30
+
+### Fixed
+
+- A docblock example on `DataSetColumn::cell_lines()` used "buyer" as its composite-column
+  illustration, a term carried over from the application this library was extracted from. Changed
+  to "customer".
+
 ## [2.1.0] — 2026-08-29
 
 ### Added

@@ -2,7 +2,7 @@
     "name": "italix/datasets",
     "description": "Server-side data tables and trees: column and action definitions in PHP, driver-rendered client configuration, whitelisted column names",
     "type": "library",
-    "version": "2.1.0",
+    "version": "2.1.1",
     "keywords": [
         "datatable",
         "datatree",
