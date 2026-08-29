@@ -285,4 +285,63 @@ test('the emitted script names the endpoint',
     strpos($driver->render_script($set, '#table'), '/documents/data.json') !== false);
 test('…and the selector it binds to', strpos($driver->render_script($set, '#table'), '#table') !== false);
 
+// -----------------------------------------------------------------------------
+section('responsive and card layout — per-column');
+
+$col = $dataset()->column('title');
+
+test('responsive() pins a priority', $col->responsive(2)->get_responsive_priority() === 2);
+test('…or pins the column with false', $col->responsive(false)->get_responsive_priority() === false);
+test('a column not given a priority reports null', $dataset()->column('status')->get_responsive_priority() === null);
+
+test('card_visible() is kept', $col->card_visible(false)->get_card_visible() === false);
+test('…defaults to null (inherits from visible())', $dataset()->column('status')->get_card_visible() === null);
+
+test('card_order() is kept', $col->card_order(3)->get_card_order() === 3);
+test('…defaults to null', $dataset()->column('status')->get_card_order() === null);
+
+$lines = [['field' => 'email', 'style' => 'subtitle']];
+test('cell_lines() is kept', $col->cell_lines($lines)->get_cell_lines() === $lines);
+test('…defaults to null', $dataset()->column('status')->get_cell_lines() === null);
+
+// -----------------------------------------------------------------------------
+section('responsive and card layout — dataset-level, and what the driver emits');
+
+$set = $dataset();
+test('responsive_layout() defaults to false (no handling)', $set->get_responsive_layout() === false);
+test('responsive_layout(\'collapse\') is kept', $set->responsive_layout('collapse')->get_responsive_layout() === 'collapse');
+
+test('card_layout() defaults to null (disabled)', $dataset()->get_card_layout() === null);
+$set = $dataset()->card_layout('title', 480, 2);
+test('card_layout() is kept as an array of its three arguments', $set->get_card_layout() === [
+    'title_field'     => 'title',
+    'breakpoint'       => 480,
+    'columns_per_row'  => 2,
+]);
+
+$plain_script_c = $driver->render_script($dataset(), '#table');
+test('a dataset without card_layout() emits no card config',
+    strpos($plain_script_c, 'cardLayout') === false && strpos($plain_script_c, '_applyCardMode') === false);
+
+$card_set = $dataset()->card_layout('title', 480, 2);
+$card_set->column('title')->card_order(1);
+$card_script_c = $driver->render_script($card_set, '#table');
+
+test('a dataset with card_layout() emits the breakpoint',
+    strpos($card_script_c, '480') !== false);
+test('…and the card-mode bootstrap function', strpos($card_script_c, '_applyCardMode') !== false);
+
+if ($node_c === '') {
+    echo "  SKIPPED — node is not installed, so the card-mode script cannot be parsed.\n";
+} else {
+    $card_script_file_c = tempnam(sys_get_temp_dir(), 'ix_ds_card_') . '.js';
+    file_put_contents($card_script_file_c, $card_script_c);
+
+    $status_n = 0;
+    @exec(escapeshellcmd($node_c) . ' --check ' . escapeshellarg($card_script_file_c) . ' 2>&1', $output, $status_n);
+    test('the card-mode script is still valid JavaScript', $status_n === 0, implode(' ', $output));
+
+    unlink($card_script_file_c);
+}
+
 exit(summary());
