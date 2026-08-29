@@ -1,5 +1,8 @@
 # Italix DataSets
 
+[![PHP Version](https://img.shields.io/badge/php-%3E%3D7.4-8892BF.svg)](https://php.net/)
+[![License](https://img.shields.io/badge/license-MPL%202.0-blue.svg)](LICENSE)
+
 Pluggable datatable and data-tree rendering for PHP. Works with any `TableMeta`-compatible source and multiple JS datatable libraries.
 
 ## Features
