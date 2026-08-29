@@ -122,6 +122,36 @@ class DataSet
     /** @var array<string, string> Event name => JS callback function name */
     private $events = [];
 
+    /**
+     * Responsive layout mode.
+     *
+     * Controls how columns are handled when the table is too wide for the viewport.
+     *
+     * Values:
+     *   false       — no responsive handling (default; table may overflow)
+     *   'hide'      — columns with lower priority are hidden; no collapsed panel
+     *   'collapse'  — hidden columns are folded into a togglable sub-row per record
+     *   'scroll'    — hint to drivers that horizontal scrolling is preferred
+     *
+     * Each driver maps these abstract values to its own API.
+     * Column priority is set via DataSetColumn::responsive().
+     *
+     * @var string|false
+     */
+    private $responsive_layout = false;
+
+    /**
+     * Card layout configuration for narrow viewports.
+     *
+     * When set, the driver renders each row as a vertical card when the
+     * viewport width is at or below the breakpoint. On wider viewports the
+     * normal table is shown. Drivers that do not support card layout ignore
+     * this setting.
+     *
+     * @var array|null  ['title_field'=>string, 'breakpoint'=>int, 'columns_per_row'=>int]
+     */
+    private $card_layout = null;
+
     /** @var array Extra driver-specific options merged at the top level */
     private $extra = [];
 
@@ -192,7 +222,7 @@ class DataSet
     {
         $names = !empty($this->visible_columns)
             ? $this->visible_columns
-            : array_keys(iterator_to_array($this->source->describe_columns()));
+            : $this->source_column_names();
 
         foreach ($names as $name) {
             yield $name => $this->column($name);
@@ -210,7 +240,26 @@ class DataSet
             return $this->visible_columns;
         }
 
-        return array_keys(iterator_to_array($this->source->describe_columns()));
+        return $this->source_column_names();
+    }
+
+    /**
+     * The column names the source declares.
+     *
+     * `TableMeta::describe_columns()` returns an **iterable**, which a source is
+     * entitled to satisfy with a plain array — the interface's own example does.
+     * `iterator_to_array()` did not accept arrays until PHP 8.2, and this
+     * library declares `php: >=7.4`, so calling it directly threw a TypeError
+     * on every array-backed source on every supported version below that.
+     *
+     * `Italix\Rules\Checker::keys_of()` already had the right shape; this is
+     * the same guard, in the library that needed it and did not have it.
+     */
+    private function source_column_names(): array
+    {
+        $columns = $this->source->describe_columns();
+
+        return array_keys(is_array($columns) ? $columns : iterator_to_array($columns));
     }
 
     // =========================================================================
@@ -574,6 +623,51 @@ class DataSet
     // =========================================================================
 
     /**
+     * Set the responsive layout mode for this dataset.
+     *
+     * Controls what happens when the table is wider than the viewport:
+     *   false       — no responsive handling (default)
+     *   'hide'      — low-priority columns are hidden outright
+     *   'collapse'  — low-priority columns collapse into a togglable sub-row
+     *   'scroll'    — horizontal scrolling (driver hint only)
+     *
+     * Column visibility priority is set via DataSetColumn::responsive().
+     * Columns not given a priority use the driver's default (usually visible).
+     *
+     * @param string|false $mode
+     * @return self
+     */
+    public function responsive_layout($mode): self
+    {
+        $this->responsive_layout = $mode;
+        return $this;
+    }
+
+    /**
+     * Enable a card-style layout for narrow viewports.
+     *
+     * Each row is rendered as a vertical card when viewport width ≤ $breakpoint.
+     * $title_field names the column shown prominently as the card heading.
+     * $columns_per_row controls how many fields appear side by side in the card body.
+     * Control which columns appear and their order with DataSetColumn::card_visible()
+     * and DataSetColumn::card_order().
+     *
+     * @param string $title_field      Column used as card heading (raw text value)
+     * @param int    $breakpoint       Viewport width in px; cards activate at or below this (default: 640)
+     * @param int    $columns_per_row  Fields per row in the card body (default: 1)
+     * @return self
+     */
+    public function card_layout(string $title_field, int $breakpoint = 640, int $columns_per_row = 1): self
+    {
+        $this->card_layout = [
+            'title_field'     => $title_field,
+            'breakpoint'      => $breakpoint,
+            'columns_per_row' => $columns_per_row,
+        ];
+        return $this;
+    }
+
+    /**
      * Set extra driver-specific options merged at the top level.
      *
      * @param array $options
@@ -721,6 +815,29 @@ class DataSet
             }
         }
         return $searchable;
+    }
+
+    /**
+     * Get the responsive layout mode.
+     *
+     * Untyped on purpose: a `string|false` union would raise this package's
+     * floor to PHP 8.0 for one return type. The docblock says the same thing.
+     *
+     * @return string|false
+     */
+    public function get_responsive_layout()
+    {
+        return $this->responsive_layout;
+    }
+
+    /**
+     * Get the card layout configuration, or null if not enabled.
+     *
+     * @return array|null
+     */
+    public function get_card_layout(): ?array
+    {
+        return $this->card_layout;
     }
 
     /** @return array */
