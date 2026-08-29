@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-namespace Italix\DataSets\Tests\Fixtures;
+namespace Italix\DataSets\Tests\PHPUnit\Fixtures;
 
 use Italix\Contracts\ColumnMeta;
 

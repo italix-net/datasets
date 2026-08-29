@@ -1,8 +1,8 @@
 {
     "name": "italix/datasets",
-    "description": "Pluggable datatable and data-tree rendering for PHP - works with any TableMeta source and multiple JS datatable libraries",
+    "description": "Server-side data tables and trees: column and action definitions in PHP, driver-rendered client configuration, whitelisted column names",
     "type": "library",
-    "license": "LGPL-2.1-or-later",
+    "version": "2.1.0",
     "keywords": [
         "datatable",
         "datatree",
@@ -15,10 +15,12 @@
         "pagination",
         "sorting"
     ],
+    "homepage": "https://github.com/italix-net/datasets",
+    "license": "MPL-2.0",
     "authors": [
         {
             "name": "Italix",
-            "homepage": "https://github.com/italix-net"
+            "email": "info@italix.net"
         }
     ],
     "support": {
@@ -26,10 +28,11 @@
         "source": "https://github.com/italix-net/datasets"
     },
     "require": {
-        "php": "^7.4 || ^8.0",
-        "italix/contracts": "dev-main"
+        "php": ">=7.4",
+        "italix/contracts": "^2.0"
     },
     "require-dev": {
+        "italix/testing": "^2.0",
         "phpunit/phpunit": "^9.5"
     },
     "autoload": {
@@ -42,21 +45,21 @@
     },
     "autoload-dev": {
         "psr-4": {
-            "Italix\\DataSets\\Tests\\": "tests/"
+            "Italix\\DataSets\\Tests\\PHPUnit\\": "tests/PHPUnit/"
         }
     },
-    "scripts": {
-        "test": "phpunit"
-    },
+    "minimum-stability": "stable",
+    "prefer-stable": true,
     "config": {
         "sort-packages": true
     },
-    "minimum-stability": "dev",
-    "prefer-stable": true,
-    "repositories": [
-        {
-            "type": "vcs",
-            "url": "https://github.com/italix-net/contracts"
-        }
-    ]
+    "scripts": {
+        "test": [
+            "php tests/DataSetTest.php",
+            "php tests/ServerSideRequestTest.php",
+            "php tests/ServerSideResponseTest.php",
+            "php tests/ActionsTest.php"
+        ],
+        "test-phpunit": "phpunit"
+    }
 }

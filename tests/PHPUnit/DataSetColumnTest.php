@@ -2,10 +2,10 @@
 
 declare(strict_types=1);
 
-namespace Italix\DataSets\Tests;
+namespace Italix\DataSets\Tests\PHPUnit;
 
 use Italix\DataSets\DataSetColumn;
-use Italix\DataSets\Tests\Fixtures\StubColumnMeta;
+use Italix\DataSets\Tests\PHPUnit\Fixtures\StubColumnMeta;
 use PHPUnit\Framework\TestCase;
 
 class DataSetColumnTest extends TestCase
@@ -43,7 +43,7 @@ class DataSetColumnTest extends TestCase
                       ->width('200px')
                       ->min_width('100px')
                       ->formatter('money', ['precision' => 2])
-                      ->h_align('right')
+                      ->horizontal_align('right')
                       ->header_align('center')
                       ->frozen(true)
                       ->css_class('highlight')
@@ -58,7 +58,7 @@ class DataSetColumnTest extends TestCase
         $this->assertSame('100px', $col->get_min_width());
         $this->assertSame('money', $col->get_formatter());
         $this->assertSame(['precision' => 2], $col->get_formatter_params());
-        $this->assertSame('right', $col->get_h_align());
+        $this->assertSame('right', $col->get_horizontal_align());
         $this->assertSame('center', $col->get_header_align());
         $this->assertTrue($col->is_frozen());
         $this->assertSame('highlight', $col->get_css_class());

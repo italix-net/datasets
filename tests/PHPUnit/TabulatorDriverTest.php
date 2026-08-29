@@ -2,12 +2,12 @@
 
 declare(strict_types=1);
 
-namespace Italix\DataSets\Tests;
+namespace Italix\DataSets\Tests\PHPUnit;
 
 use Italix\DataSets\DataSet;
 use Italix\DataSets\DataTree;
 use Italix\DataSets\Drivers\Tabulator\TabulatorDriver;
-use Italix\DataSets\Tests\Fixtures\StubTableMeta;
+use Italix\DataSets\Tests\PHPUnit\Fixtures\StubTableMeta;
 use PHPUnit\Framework\TestCase;
 
 class TabulatorDriverTest extends TestCase
@@ -174,7 +174,7 @@ class TabulatorDriverTest extends TestCase
     {
         $ds = new DataSet(StubTableMeta::users());
         $ds->columns(['id']);
-        $ds->column('id')->h_align('right')->header_align('center');
+        $ds->column('id')->horizontal_align('right')->header_align('center');
 
         $config = $this->driver->render($ds);
 
