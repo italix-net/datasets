@@ -2,11 +2,11 @@
 
 declare(strict_types=1);
 
-namespace Italix\DataSets\Tests;
+namespace Italix\DataSets\Tests\PHPUnit;
 
 use Italix\DataSets\DataSet;
 use Italix\DataSets\DataTree;
-use Italix\DataSets\Tests\Fixtures\StubTableMeta;
+use Italix\DataSets\Tests\PHPUnit\Fixtures\StubTableMeta;
 use PHPUnit\Framework\TestCase;
 
 use function Italix\DataSets\dataset;

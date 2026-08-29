@@ -1,357 +1,347 @@
 <?php
+/*
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at https://mozilla.org/MPL/2.0/.
+ */
+/**
+ * Italix DataSets — the configuration, and the JavaScript it writes
+ *
+ * A DataSet does two things that can go wrong quietly. It decides which columns
+ * exist, which is the whitelist every caller leans on when it builds an
+ * `ORDER BY`; and it emits a block of JavaScript that the application drops
+ * inside a `<script>` element — the library's own docblock shows exactly that
+ * usage.
+ *
+ * The second one is where the interesting failure lives. `json_encode()` makes
+ * a value safe *as a JSON string*: quotes and backslashes are escaped, so
+ * nothing can break out of the literal. But a value never had to break out of
+ * the literal — it breaks out of the **element**. A label containing
+ * `</script>` closes the tag, and everything after it is parsed as HTML.
+ *
+ * `JSON_HEX_TAG` is what prevents that, and three of the sixteen call sites in
+ * the driver passed `JSON_UNESCAPED_SLASHES`, which removes the accidental
+ * protection `<\/script>` would otherwise have given.
+ *
+ * Run: php src/Libs/Italix/DataSets/tests/DataSetTest.php
+ */
 
 declare(strict_types=1);
 
-namespace Italix\DataSets\Tests;
+(static function (): void {
+    foreach ([
+        __DIR__ . '/../../../../../vendor/autoload.php',
+        __DIR__ . '/../../../../vendor/autoload.php',
+        __DIR__ . '/../../../autoload.php',
+        __DIR__ . '/../vendor/autoload.php',
+    ] as $autoload) {
+        if (is_file($autoload)) {
+            require_once $autoload;
 
-use Italix\DataSets\ActionColumn;
+            return;
+        }
+    }
+
+    fwrite(STDERR, "Could not find an autoloader. Run composer install.\n");
+    exit(2);
+})();
+
+use Italix\Contracts\ColumnMeta;
+use Italix\Contracts\TableMeta;
 use Italix\DataSets\DataSet;
-use Italix\DataSets\DataSetColumn;
-use Italix\DataSets\Toolbar;
-use Italix\DataSets\Tests\Fixtures\StubTableMeta;
-use InvalidArgumentException;
-use PHPUnit\Framework\TestCase;
+use Italix\DataSets\Drivers\Tabulator\TabulatorDriver;
 
-class DataSetTest extends TestCase
+use function Italix\Testing\{suite, section, test, summary};
+
+/**
+ * A column, and a table, written here rather than borrowed.
+ *
+ * `Italix\Forms` ships a perfectly good array adapter, and using it would make
+ * this library's tests depend on that one — against house rule 13, in the
+ * direction nobody notices until the package is extracted. A fixture is nine
+ * lines.
+ */
+final class TestColumn implements ColumnMeta
 {
-    public function test_creates_from_table_meta(): void
-    {
-        $table = StubTableMeta::users();
-        $ds = new DataSet($table);
+    private string $name_c;
+    private string $type_c;
 
-        $this->assertSame($table, $ds->source());
-        $this->assertFalse($ds->is_tree());
+    public function __construct(string $name_c, string $type_c = 'VARCHAR')
+    {
+        $this->name_c = $name_c;
+        $this->type_c = $type_c;
     }
 
-    public function test_columns_sets_visible_order(): void
+    public function get_name(): string { return $this->name_c; }
+    public function get_type(): string { return $this->type_c; }
+    public function is_nullable(): bool { return $this->name_c !== 'id'; }
+    public function is_primary_key(): bool { return $this->name_c === 'id'; }
+    public function get_length(): ?int { return $this->type_c === 'VARCHAR' ? 200 : null; }
+    public function get_default() { return null; }
+    public function has_default(): bool { return false; }
+}
+
+/** A source that hands back a plain **array**, which the contract permits. */
+final class ArrayTable implements TableMeta
+{
+    /** @var array<string, ColumnMeta> */
+    private array $columns = [];
+
+    public function __construct(array $names)
     {
-        $ds = new DataSet(StubTableMeta::users());
-        $ds->columns(['email', 'name']);
-
-        $this->assertSame(['email', 'name'], $ds->get_visible_columns());
-    }
-
-    public function test_columns_throws_on_unknown_column(): void
-    {
-        $ds = new DataSet(StubTableMeta::users());
-
-        $this->expectException(InvalidArgumentException::class);
-        $ds->columns(['nonexistent']);
-    }
-
-    public function test_column_returns_data_set_column(): void
-    {
-        $ds = new DataSet(StubTableMeta::users());
-        $col = $ds->column('name');
-
-        $this->assertInstanceOf(DataSetColumn::class, $col);
-        $this->assertSame('name', $col->get_name());
-    }
-
-    public function test_column_returns_same_instance(): void
-    {
-        $ds = new DataSet(StubTableMeta::users());
-        $col1 = $ds->column('name');
-        $col2 = $ds->column('name');
-
-        $this->assertSame($col1, $col2);
-    }
-
-    public function test_column_throws_on_unknown(): void
-    {
-        $ds = new DataSet(StubTableMeta::users());
-
-        $this->expectException(InvalidArgumentException::class);
-        $ds->column('nonexistent');
-    }
-
-    public function test_each_column_iterates_visible(): void
-    {
-        $ds = new DataSet(StubTableMeta::users());
-        $ds->columns(['name', 'email']);
-
-        $names = [];
-        foreach ($ds->each_column() as $name => $col) {
-            $names[] = $name;
-            $this->assertInstanceOf(DataSetColumn::class, $col);
+        foreach ($names as $name_c) {
+            $this->columns[$name_c] = new TestColumn($name_c);
         }
-
-        $this->assertSame(['name', 'email'], $names);
     }
 
-    public function test_each_column_iterates_all_when_no_selection(): void
-    {
-        $ds = new DataSet(StubTableMeta::users());
+    public function describe_columns(): iterable { return $this->columns; }
+    public function describe_column(string $name): ?ColumnMeta { return $this->columns[$name] ?? null; }
+}
 
-        $names = [];
-        foreach ($ds->each_column() as $name => $col) {
-            $names[] = $name;
+/** The same source, handing back a **Generator** instead. */
+final class GeneratorTable implements TableMeta
+{
+    private array $columns = [];
+
+    public function __construct(array $names)
+    {
+        foreach ($names as $name_c) {
+            $this->columns[$name_c] = new TestColumn($name_c);
         }
-
-        $this->assertSame(['id', 'name', 'email', 'created_at'], $names);
     }
 
-    public function test_ajax_configuration(): void
+    public function describe_columns(): iterable
     {
-        $ds = new DataSet(StubTableMeta::users());
-        $ds->ajax_url('/api/users')
-           ->ajax_method('POST')
-           ->ajax_params(['tenant' => 'acme']);
-
-        $this->assertSame('/api/users', $ds->get_ajax_url());
-        $this->assertSame('POST', $ds->get_ajax_method());
-        $this->assertSame(['tenant' => 'acme'], $ds->get_ajax_params());
+        foreach ($this->columns as $name_c => $column) {
+            yield $name_c => $column;
+        }
     }
 
-    public function test_pagination_defaults(): void
-    {
-        $ds = new DataSet(StubTableMeta::users());
+    public function describe_column(string $name): ?ColumnMeta { return $this->columns[$name] ?? null; }
+}
 
-        $this->assertSame(25, $ds->get_per_page());
-        $this->assertSame([10, 25, 50, 100], $ds->get_page_sizes());
-    }
+suite('Italix DataSets — configuration and emitted JavaScript');
 
-    public function test_pagination_configuration(): void
-    {
-        $ds = new DataSet(StubTableMeta::users());
-        $ds->per_page(50)->page_sizes([25, 50, 100, 200]);
+$table   = static fn (): TableMeta => new ArrayTable(['id', 'title', 'status']);
+$dataset = static fn (): DataSet => new DataSet($table());
 
-        $this->assertSame(50, $ds->get_per_page());
-        $this->assertSame([25, 50, 100, 200], $ds->get_page_sizes());
-    }
+// -----------------------------------------------------------------------------
+section('an iterable source is an iterable source, array or not');
 
-    // =========================================================================
-    // Multi-column Sorting
-    // =========================================================================
+// `TableMeta::describe_columns()` is declared `iterable`, and the interface's
+// own example returns an array. `iterator_to_array()` did not accept arrays
+// until PHP 8.2 while this library declares `php: >=7.4`, so every array-backed
+// source threw a TypeError on every supported version below that.
+//
+// Found by writing this file: the fixture above is an ordinary implementation
+// of the published contract, and it crashed on the first call.
+$both_flag = true;
 
-    public function test_default_sort_single(): void
-    {
-        $ds = new DataSet(StubTableMeta::users());
-        $ds->default_sort('name', 'desc');
+foreach ([new ArrayTable(['id', 'title']), new GeneratorTable(['id', 'title'])] as $source) {
+    try {
+        $columns = (new DataSet($source))->get_visible_columns();
 
-        $this->assertSame('name', $ds->get_default_sort_column());
-        $this->assertSame('desc', $ds->get_default_sort_direction());
-        $this->assertCount(1, $ds->get_default_sorts());
-    }
-
-    public function test_default_sort_multi(): void
-    {
-        $ds = new DataSet(StubTableMeta::users());
-        $ds->default_sort('name', 'asc');
-        $ds->default_sort('created_at', 'desc');
-
-        $sorts = $ds->get_default_sorts();
-        $this->assertCount(2, $sorts);
-        $this->assertSame('name', $sorts[0]['column']);
-        $this->assertSame('asc', $sorts[0]['direction']);
-        $this->assertSame('created_at', $sorts[1]['column']);
-        $this->assertSame('desc', $sorts[1]['direction']);
-
-        // Backwards compat: returns first sort
-        $this->assertSame('name', $ds->get_default_sort_column());
-        $this->assertSame('asc', $ds->get_default_sort_direction());
-    }
-
-    public function test_no_default_sort(): void
-    {
-        $ds = new DataSet(StubTableMeta::users());
-
-        $this->assertNull($ds->get_default_sort_column());
-        $this->assertSame('asc', $ds->get_default_sort_direction());
-        $this->assertSame([], $ds->get_default_sorts());
-    }
-
-    // =========================================================================
-    // Display
-    // =========================================================================
-
-    public function test_display_options(): void
-    {
-        $ds = new DataSet(StubTableMeta::users());
-        $ds->id('users-table')
-           ->css_class('my-table')
-           ->height('500px')
-           ->layout('fitData')
-           ->global_search(true, 'Search users...');
-
-        $this->assertSame('users-table', $ds->get_id());
-        $this->assertSame('my-table', $ds->get_css_class());
-        $this->assertSame('500px', $ds->get_height());
-        $this->assertSame('fitData', $ds->get_layout());
-        $this->assertTrue($ds->has_global_search());
-        $this->assertSame('Search users...', $ds->get_search_placeholder());
-    }
-
-    public function test_extra_options(): void
-    {
-        $ds = new DataSet(StubTableMeta::users());
-        $ds->extra(['movableColumns' => true]);
-        $ds->extra(['resizableRows' => true]);
-
-        $this->assertSame(
-            ['movableColumns' => true, 'resizableRows' => true],
-            $ds->get_extra()
-        );
-    }
-
-    // =========================================================================
-    // Search
-    // =========================================================================
-
-    public function test_search_debounce_default(): void
-    {
-        $ds = new DataSet(StubTableMeta::users());
-        $this->assertSame(300, $ds->get_search_debounce());
-    }
-
-    public function test_search_debounce_custom(): void
-    {
-        $ds = new DataSet(StubTableMeta::users());
-        $ds->search_debounce(500);
-        $this->assertSame(500, $ds->get_search_debounce());
-    }
-
-    public function test_search_min_length_default(): void
-    {
-        $ds = new DataSet(StubTableMeta::users());
-        $this->assertSame(1, $ds->get_search_min_length());
-    }
-
-    public function test_search_min_length_custom(): void
-    {
-        $ds = new DataSet(StubTableMeta::users());
-        $ds->search_min_length(3);
-        $this->assertSame(3, $ds->get_search_min_length());
-    }
-
-    public function test_get_searchable_columns(): void
-    {
-        $ds = new DataSet(StubTableMeta::users());
-        $ds->columns(['id', 'name', 'email', 'created_at']);
-        $ds->column('name')->searchable(true);
-        $ds->column('email')->searchable(true);
-
-        $this->assertSame(['name', 'email'], $ds->get_searchable_columns());
-    }
-
-    public function test_get_searchable_columns_empty(): void
-    {
-        $ds = new DataSet(StubTableMeta::users());
-        $this->assertSame([], $ds->get_searchable_columns());
-    }
-
-    // =========================================================================
-    // Action Column
-    // =========================================================================
-
-    public function test_action_column(): void
-    {
-        $ds = new DataSet(StubTableMeta::users());
-        $ac = $ds->action_column();
-
-        $this->assertInstanceOf(ActionColumn::class, $ac);
-        $this->assertSame($ac, $ds->action_column()); // same instance
-    }
-
-    public function test_has_action_column(): void
-    {
-        $ds = new DataSet(StubTableMeta::users());
-        $this->assertFalse($ds->has_action_column());
-
-        $ds->action_column()->button('edit', 'Edit');
-        $this->assertTrue($ds->has_action_column());
-    }
-
-    public function test_get_action_column_null_when_not_set(): void
-    {
-        $ds = new DataSet(StubTableMeta::users());
-        $this->assertNull($ds->get_action_column());
-    }
-
-    // =========================================================================
-    // Toolbar
-    // =========================================================================
-
-    public function test_toolbar(): void
-    {
-        $ds = new DataSet(StubTableMeta::users());
-        $tb = $ds->toolbar();
-
-        $this->assertInstanceOf(Toolbar::class, $tb);
-        $this->assertSame($tb, $ds->toolbar()); // same instance
-    }
-
-    public function test_has_toolbar(): void
-    {
-        $ds = new DataSet(StubTableMeta::users());
-        $this->assertFalse($ds->has_toolbar());
-
-        $ds->toolbar()->button('add', 'Add', 'none');
-        $this->assertTrue($ds->has_toolbar());
-    }
-
-    public function test_get_toolbar_null_when_not_set(): void
-    {
-        $ds = new DataSet(StubTableMeta::users());
-        $this->assertNull($ds->get_toolbar());
-    }
-
-    // =========================================================================
-    // Row Selection
-    // =========================================================================
-
-    public function test_selectable_default(): void
-    {
-        $ds = new DataSet(StubTableMeta::users());
-        $this->assertFalse($ds->is_selectable());
-        $this->assertFalse($ds->get_selectable());
-    }
-
-    public function test_selectable_checkbox(): void
-    {
-        $ds = new DataSet(StubTableMeta::users());
-        $ds->selectable(true);
-
-        $this->assertTrue($ds->is_selectable());
-        $this->assertTrue($ds->get_selectable());
-    }
-
-    public function test_selectable_highlight(): void
-    {
-        $ds = new DataSet(StubTableMeta::users());
-        $ds->selectable('highlight');
-
-        $this->assertTrue($ds->is_selectable());
-        $this->assertSame('highlight', $ds->get_selectable());
-    }
-
-    // =========================================================================
-    // Events
-    // =========================================================================
-
-    public function test_on_event(): void
-    {
-        $ds = new DataSet(StubTableMeta::users());
-        $ds->on('row_click', 'onRowClick');
-        $ds->on('edit', 'onEditRow');
-
-        $events = $ds->get_events();
-        $this->assertSame('onRowClick', $events['row_click']);
-        $this->assertSame('onEditRow', $events['edit']);
-    }
-
-    public function test_get_event_callback(): void
-    {
-        $ds = new DataSet(StubTableMeta::users());
-        $ds->on('edit', 'onEdit');
-
-        $this->assertSame('onEdit', $ds->get_event_callback('edit'));
-        $this->assertNull($ds->get_event_callback('nonexistent'));
-    }
-
-    public function test_events_empty_by_default(): void
-    {
-        $ds = new DataSet(StubTableMeta::users());
-        $this->assertSame([], $ds->get_events());
+        if ($columns !== ['id', 'title']) {
+            $both_flag = false;
+        }
+    } catch (\Throwable $e) {
+        $both_flag = false;
     }
 }
+
+test('AN ARRAY-BACKED SOURCE WORKS, AND SO DOES A GENERATOR-BACKED ONE',
+    $both_flag,
+    'the contract says iterable; only one of the two shapes used to work');
+
+// -----------------------------------------------------------------------------
+section('the column whitelist is the one every caller leans on');
+
+test('a configured column is accepted', $dataset()->column('title')->get_name() === 'title');
+
+$refuses = static function (callable $call): bool {
+    try {
+        $call();
+
+        return false;
+    } catch (\InvalidArgumentException $e) {
+        return true;
+    }
+};
+
+test('a column the source does not have is refused',
+    $refuses(static fn () => $dataset()->column('no_such_column')),
+    'this list is what an ORDER BY is checked against; silently accepting a name defeats that');
+test('…and so is a hostile one', $refuses(static fn () => $dataset()->column('id; DROP TABLE users --')));
+test('columns() refuses the whole set if any member is unknown',
+    $refuses(static fn () => $dataset()->columns(['title', 'nope'])),
+    'a partially applied whitelist is the worst of the three outcomes');
+test('visible columns default to every source column',
+    $dataset()->get_visible_columns() === ['id', 'title', 'status']);
+test('…and narrow to what columns() was given',
+    $dataset()->columns(['title'])->get_visible_columns() === ['title']);
+
+// -----------------------------------------------------------------------------
+section('the emitted script: nothing may close the element it lives in');
+
+$driver = new TabulatorDriver();
+
+$breakout_c = '</script><img src=x onerror=alert(1)>';
+
+$entry_points = [
+    'column label' => static function () use ($dataset, $breakout_c): DataSet {
+        $set = $dataset();
+        $set->column('title')->label($breakout_c);
+
+        return $set;
+    },
+    'ajax url' => static fn (): DataSet => $dataset()->ajax_url('/x?' . $breakout_c),
+    'search placeholder' => static fn (): DataSet => $dataset()->global_search(true, $breakout_c),
+    'dataset id' => static fn (): DataSet => $dataset()->id($breakout_c),
+    'css class' => static fn (): DataSet => $dataset()->css_class($breakout_c),
+    'ajax params' => static fn (): DataSet => $dataset()->ajax_params(['note' => $breakout_c]),
+    'column css class' => static function () use ($dataset, $breakout_c): DataSet {
+        $set = $dataset();
+        $set->column('title')->css_class($breakout_c);
+
+        return $set;
+    },
+    'column formatter params' => static function () use ($dataset, $breakout_c): DataSet {
+        $set = $dataset();
+        $set->column('title')->formatter('html', ['prefix' => $breakout_c]);
+
+        return $set;
+    },
+    'extra options' => static fn (): DataSet => $dataset()->extra(['note' => $breakout_c]),
+];
+
+$leaks = [];
+
+foreach ($entry_points as $where_c => $build) {
+    $script = $driver->render_script($build()->ajax_url('/data.json'), '#table');
+
+    if (strpos($script, '</script>') !== false) {
+        $leaks[] = $where_c;
+    }
+}
+
+test('NO ENTRY POINT CAN CLOSE THE SCRIPT TAG',
+    $leaks === [],
+    $leaks === [] ? '' : 'closes the element via: ' . implode(', ', $leaks));
+
+// The other half: the value must still arrive intact. An escape that mangles
+// the text passes the test above and breaks every label with a `<` in it.
+$set = $dataset();
+$set->column('title')->label('Profit < loss & "quoted"');
+
+$script = $driver->render_script($set->ajax_url('/data.json'), '#table');
+
+// Anchored on the *pair*: the first `"title":` in the document belongs to the
+// `id` column's header, not to the column called `title`. The first version of
+// this assertion read that one and reported "Id".
+preg_match('/"title":\s*("(?:[^"\\\\]|\\\\.)*")\s*,\s*"field":\s*"title"/', $script, $found);
+
+test('the label survives the escaping intact',
+    isset($found[1]) && json_decode($found[1]) === 'Profit < loss & "quoted"',
+    'decoded: ' . var_export(isset($found[1]) ? json_decode($found[1]) : null, true));
+
+// -----------------------------------------------------------------------------
+section('and the script is still JavaScript afterwards');
+
+// Escaping that produces a syntax error is a different outage from the one it
+// prevents. Node is the only honest judge of that, and its absence is a skip
+// with a reason rather than a silent pass.
+$node_c = trim((string) @shell_exec('command -v node 2>/dev/null'));
+
+if ($node_c === '') {
+    echo "  SKIPPED — node is not installed, so the emitted script cannot be parsed.\n";
+} else {
+    $set = $dataset();
+    $set->column('title')->label($breakout_c);
+    $set->column('status')->label('Ünïcodé — ' . $breakout_c);
+
+    $script_c = tempnam(sys_get_temp_dir(), 'ix_ds_') . '.js';
+    file_put_contents($script_c, $driver->render_script($set->ajax_url('/data.json'), '#table'));
+
+    $status_n = 0;
+    @exec(escapeshellcmd($node_c) . ' --check ' . escapeshellarg($script_c) . ' 2>&1', $output, $status_n);
+
+    test('node parses the emitted script', $status_n === 0, implode(' ', $output));
+
+    unlink($script_c);
+}
+
+// -----------------------------------------------------------------------------
+section('the rest of the configuration survives a round trip');
+
+$set = $dataset()
+    ->ajax_url('/documents/data.json')
+    ->per_page(50)
+    ->default_sort('title', 'desc');
+
+test('the ajax url is kept', $set->get_ajax_url() === '/documents/data.json');
+test('the default sort column is kept', $set->get_default_sort_column() === 'title');
+test('…and its direction', $set->get_default_sort_direction() === 'desc');
+test('the emitted script names the endpoint',
+    strpos($driver->render_script($set, '#table'), '/documents/data.json') !== false);
+test('…and the selector it binds to', strpos($driver->render_script($set, '#table'), '#table') !== false);
+
+// -----------------------------------------------------------------------------
+section('responsive and card layout — per-column');
+
+$col = $dataset()->column('title');
+
+test('responsive() pins a priority', $col->responsive(2)->get_responsive_priority() === 2);
+test('…or pins the column with false', $col->responsive(false)->get_responsive_priority() === false);
+test('a column not given a priority reports null', $dataset()->column('status')->get_responsive_priority() === null);
+
+test('card_visible() is kept', $col->card_visible(false)->get_card_visible() === false);
+test('…defaults to null (inherits from visible())', $dataset()->column('status')->get_card_visible() === null);
+
+test('card_order() is kept', $col->card_order(3)->get_card_order() === 3);
+test('…defaults to null', $dataset()->column('status')->get_card_order() === null);
+
+$lines = [['field' => 'email', 'style' => 'subtitle']];
+test('cell_lines() is kept', $col->cell_lines($lines)->get_cell_lines() === $lines);
+test('…defaults to null', $dataset()->column('status')->get_cell_lines() === null);
+
+// -----------------------------------------------------------------------------
+section('responsive and card layout — dataset-level, and what the driver emits');
+
+$set = $dataset();
+test('responsive_layout() defaults to false (no handling)', $set->get_responsive_layout() === false);
+test('responsive_layout(\'collapse\') is kept', $set->responsive_layout('collapse')->get_responsive_layout() === 'collapse');
+
+test('card_layout() defaults to null (disabled)', $dataset()->get_card_layout() === null);
+$set = $dataset()->card_layout('title', 480, 2);
+test('card_layout() is kept as an array of its three arguments', $set->get_card_layout() === [
+    'title_field'     => 'title',
+    'breakpoint'       => 480,
+    'columns_per_row'  => 2,
+]);
+
+$plain_script_c = $driver->render_script($dataset(), '#table');
+test('a dataset without card_layout() emits no card config',
+    strpos($plain_script_c, 'cardLayout') === false && strpos($plain_script_c, '_applyCardMode') === false);
+
+$card_set = $dataset()->card_layout('title', 480, 2);
+$card_set->column('title')->card_order(1);
+$card_script_c = $driver->render_script($card_set, '#table');
+
+test('a dataset with card_layout() emits the breakpoint',
+    strpos($card_script_c, '480') !== false);
+test('…and the card-mode bootstrap function', strpos($card_script_c, '_applyCardMode') !== false);
+
+if ($node_c === '') {
+    echo "  SKIPPED — node is not installed, so the card-mode script cannot be parsed.\n";
+} else {
+    $card_script_file_c = tempnam(sys_get_temp_dir(), 'ix_ds_card_') . '.js';
+    file_put_contents($card_script_file_c, $card_script_c);
+
+    $status_n = 0;
+    @exec(escapeshellcmd($node_c) . ' --check ' . escapeshellarg($card_script_file_c) . ' 2>&1', $output, $status_n);
+    test('the card-mode script is still valid JavaScript', $status_n === 0, implode(' ', $output));
+
+    unlink($card_script_file_c);
+}
+
+exit(summary());

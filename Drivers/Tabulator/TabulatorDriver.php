@@ -1,9 +1,14 @@
 <?php
+/*
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at https://mozilla.org/MPL/2.0/.
+ */
 /**
  * Italix DataSets - TabulatorDriver
  *
  * @package Italix\DataSets
- * @license LGPL-2.1-or-later
+ * @license MPL-2.0
  */
 
 declare(strict_types=1);
@@ -39,6 +44,39 @@ use Italix\DataSets\ToolbarButton;
  */
 class TabulatorDriver implements DriverInterface
 {
+
+    /**
+     * Flags that make a JSON literal safe **inside a `<script>` block**.
+     *
+     * `JSON_HEX_TAG` is the one that matters: without it, a string containing
+     * `</script>` is emitted verbatim, closes the surrounding element and hands
+     * whatever follows to the HTML parser. `json_encode()` escapes quotes and
+     * backslashes, so the value cannot break out of the JSON *string* — but it
+     * never had to, because it breaks out of the *element* instead.
+     *
+     * `JSON_UNESCAPED_SLASHES`, passed at three of the call sites, removes the
+     * accidental protection that `<\/script>` would otherwise have given.
+     *
+     * The other three flags cost nothing and make the same literal safe if it
+     * is ever moved into an HTML attribute.
+     */
+    private const JS_SAFE_FLAGS = JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT;
+
+    /**
+     * The one door every value takes on its way into the emitted JavaScript.
+     *
+     * Sixteen `json_encode()` calls were reached by browser- or
+     * translator-supplied strings — column labels, placeholders, button HTML,
+     * cell templates. Adding the flags to each one leaves the seventeenth to
+     * whoever adds it; a single helper makes the unsafe spelling the one that
+     * has to be typed on purpose, and greppable when it is.
+     *
+     * @param mixed $value
+     */
+    private function js($value, int $flags = 0): string
+    {
+        return (string) json_encode($value, $flags | self::JS_SAFE_FLAGS);
+    }
     /**
      * {@inheritdoc}
      */
@@ -109,6 +147,20 @@ class TabulatorDriver implements DriverInterface
             $config['_actionColumn'] = $dataset->get_action_column()->to_array();
         }
 
+        // Responsive layout
+        $responsive_mode = $dataset->get_responsive_layout();
+        if ($responsive_mode !== false) {
+            // 'collapse' → Tabulator "collapse" sub-row
+            // 'hide'     → Tabulator true (hides columns with no expand panel)
+            // 'scroll'   → driver hint only; leave responsiveLayout unset and
+            //              rely on the container's overflow-x: auto
+            if ($responsive_mode === 'collapse') {
+                $config['responsiveLayout'] = 'collapse';
+            } elseif ($responsive_mode === 'hide') {
+                $config['responsiveLayout'] = true;
+            }
+        }
+
         // Extra driver-specific options (merged last so they can override)
         if (!empty($dataset->get_extra())) {
             $config = array_merge($config, $dataset->get_extra());
@@ -131,16 +183,18 @@ class TabulatorDriver implements DriverInterface
     public function render_script(DataSet $dataset, string $selector, ?string $var_name = null): string
     {
         $config = $this->render($dataset);
-        $config_json = json_encode($config, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
-        $selector_escaped = json_encode($selector);
+        $config_json = $this->js($config, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
+        $selector_escaped = $this->js($selector);
 
         $var_assignment = $var_name !== null ? "var {$var_name} = " : '';
         $table_var = $var_name !== null ? $var_name : '_table';
-        $searchable_columns = json_encode($dataset->get_searchable_columns());
+        $searchable_columns = $this->js($dataset->get_searchable_columns());
         $debounce = $dataset->get_search_debounce();
         $min_length = $dataset->get_search_min_length();
         $events = $dataset->get_events();
-        $events_json = json_encode($events);
+        $events_json = $this->js($events);
+
+        $needs_escape = $dataset->get_card_layout() !== null || $this->has_cell_lines($dataset);
 
         $js = "(function() {\n";
         $js .= "    var config = {$config_json};\n";
@@ -150,22 +204,48 @@ class TabulatorDriver implements DriverInterface
         $js .= "    var _minLength = {$min_length};\n";
         $js .= "    var _events = {$events_json};\n\n";
 
+        // XSS escape helper — emitted once if card layout or compound cells are active
+        if ($needs_escape) {
+            $js .= $this->build_escape_html_js();
+        }
+
         // AJAX request function
         $js .= $this->build_ajax_request_func($dataset);
 
         // Action column formatter (JS function, cannot be in JSON)
         if ($dataset->has_action_column()) {
             $js .= $this->build_action_column_js($dataset);
+        } elseif ($dataset->get_card_layout() !== null) {
+            // Card layout needs _cardActionHtml even without an action column
+            $js .= "    var _cardActionHtml = '';\n\n";
         }
 
         // Event wiring (row events)
         $js .= $this->build_row_event_js($dataset);
 
+        // Card layout config: rowFormatter must be assigned to `config` BEFORE the
+        // Tabulator instance is created — Tabulator's OptionsList.generate() builds a
+        // fresh internal options object at construction time and only picks up
+        // top-level keys (like rowFormatter) that exist on `config` at that point; keys
+        // absent at construction silently fall back to the default and later mutations
+        // to `config` are never read again. (Array-valued keys like `columns`, present
+        // from the start, keep a live reference, which is why cell_lines mutations
+        // further below — applied after construction — still work.)
+        if ($dataset->get_card_layout() !== null) {
+            $js .= $this->build_card_layout_config_js($dataset);
+        }
+
         // Create the Tabulator instance
-        if ($var_name !== null) {
-            $js .= "    var {$table_var} = new Tabulator({$selector_escaped}, config);\n\n";
-        } else {
-            $js .= "    var {$table_var} = new Tabulator({$selector_escaped}, config);\n\n";
+        $js .= "    var {$table_var} = new Tabulator({$selector_escaped}, config);\n\n";
+
+        // Card layout bootstrap: header/mode-class toggle + resize listener (needs the instance)
+        if ($dataset->get_card_layout() !== null) {
+            $js .= $this->build_card_layout_bootstrap_js($table_var);
+        }
+
+        // Compound cell lines: replace @@CELL_LINES_*@@ placeholders
+        if ($this->has_cell_lines($dataset)) {
+            $js .= $this->build_cell_lines_js($dataset);
         }
 
         // Toolbar
@@ -196,10 +276,11 @@ class TabulatorDriver implements DriverInterface
     private function build_columns(DataSet $dataset): array
     {
         $columns = [];
+        $has_responsive = $dataset->get_responsive_layout() !== false;
 
-        // Selection checkbox column
+        // Selection checkbox column (always visible when responsive is active)
         if ($dataset->is_selectable() && $dataset->get_selectable() === true) {
-            $columns[] = [
+            $sel_col = [
                 'formatter' => 'rowSelection',
                 'titleFormatter' => 'rowSelection',
                 'headerSort' => false,
@@ -208,12 +289,20 @@ class TabulatorDriver implements DriverInterface
                 'frozen' => true,
                 'cellClick' => '@@ROW_TOGGLE_SELECT@@',
             ];
+            if ($has_responsive) {
+                $sel_col['responsive'] = 0;
+            }
+            $columns[] = $sel_col;
         }
 
         // Action column at start
         if ($dataset->has_action_column()
             && $dataset->get_action_column()->get_position() === 'start') {
-            $columns[] = $this->build_action_column_def($dataset->get_action_column());
+            $def = $this->build_action_column_def($dataset->get_action_column());
+            if ($has_responsive) {
+                $def['responsive'] = 0; // action buttons must always be reachable
+            }
+            $columns[] = $def;
         }
 
         // Data columns
@@ -224,7 +313,11 @@ class TabulatorDriver implements DriverInterface
         // Action column at end (default)
         if ($dataset->has_action_column()
             && $dataset->get_action_column()->get_position() === 'end') {
-            $columns[] = $this->build_action_column_def($dataset->get_action_column());
+            $def = $this->build_action_column_def($dataset->get_action_column());
+            if ($has_responsive) {
+                $def['responsive'] = 0; // action buttons must always be reachable
+            }
+            $columns[] = $def;
         }
 
         return $columns;
@@ -261,7 +354,7 @@ class TabulatorDriver implements DriverInterface
 
         // Width
         if ($col->get_width() !== null) {
-            $def['width'] = $col->get_width();
+            $def['width'] = $this->parse_width($col->get_width());
         }
         if ($col->get_min_width() !== null) {
             $def['minWidth'] = (int)$col->get_min_width();
@@ -276,8 +369,8 @@ class TabulatorDriver implements DriverInterface
         }
 
         // Alignment
-        if ($col->get_h_align() !== null) {
-            $def['hozAlign'] = $col->get_h_align();
+        if ($col->get_horizontal_align() !== null) {
+            $def['hozAlign'] = $col->get_horizontal_align();
         }
         if ($col->get_header_align() !== null) {
             $def['headerHozAlign'] = $col->get_header_align();
@@ -299,6 +392,20 @@ class TabulatorDriver implements DriverInterface
         } elseif ($col->is_searchable()) {
             $def['headerFilter'] = 'input';
             $def['headerFilterLiveFilter'] = true;
+        }
+
+        // Responsive hide priority
+        $priority = $col->get_responsive_priority();
+        if ($priority !== null) {
+            // false → never hide (Tabulator uses 0 for "always visible")
+            // int   → hide order (higher = hidden first)
+            $def['responsive'] = ($priority === false) ? 0 : $priority;
+        }
+
+        // Compound cell lines — overrides any other formatter with a JS placeholder
+        if ($col->get_cell_lines() !== null) {
+            $def['formatter'] = '@@CELL_LINES_' . strtoupper($col->get_name()) . '@@';
+            unset($def['formatterParams']);
         }
 
         // Extra driver-specific options
@@ -326,7 +433,7 @@ class TabulatorDriver implements DriverInterface
         ];
 
         if ($action_col->get_width() !== null) {
-            $def['width'] = $action_col->get_width();
+            $def['width'] = $this->parse_width($action_col->get_width());
         }
         if ($action_col->is_frozen()) {
             $def['frozen'] = true;
@@ -603,7 +710,7 @@ JS;
         }
 
         $btn_html = implode(' ', $btn_html_parts);
-        $btn_html_escaped = json_encode($btn_html);
+        $btn_html_escaped = $this->js($btn_html);
 
         // Build confirm map
         $confirms = [];
@@ -612,13 +719,14 @@ JS;
                 $confirms[$btn->get_name()] = $btn->get_confirm();
             }
         }
-        $confirms_json = json_encode((object)$confirms);
+        $confirms_json = $this->js((object)$confirms);
 
         $js = <<<JS
     // Action column formatter
-    var _actionConfirms = {$confirms_json};
+    var _actionConfirms  = {$confirms_json};
+    var _cardActionHtml  = {$btn_html_escaped};
     var _actionFormatter = function(cell) {
-        return {$btn_html_escaped};
+        return _cardActionHtml;
     };
 
     // Replace the placeholder formatter with the real function
@@ -672,7 +780,7 @@ JS;
 
         foreach ($row_event_map as $ds_event => $tab_event) {
             if (isset($events[$ds_event])) {
-                $callback = json_encode($events[$ds_event]);
+                $callback = $this->js($events[$ds_event]);
                 $js .= <<<JS
     config.{$tab_event} = function(e, row) {
         var cb = {$callback};
@@ -722,7 +830,7 @@ JS;
             return '';
         }
 
-        $selector_escaped = json_encode($selector);
+        $selector_escaped = $this->js($selector);
         $events = $dataset->get_events();
         $position = $toolbar->get_position();
         $toolbar_css = $toolbar->get_css_class() ?? 'italix-dataset-toolbar';
@@ -743,7 +851,7 @@ JS;
         $toolbar_html = '<div class="' . $this->escape_js_attr($toolbar_css) . '">'
             . implode(' ', $btn_html_parts)
             . '</div>';
-        $toolbar_html_escaped = json_encode($toolbar_html);
+        $toolbar_html_escaped = $this->js($toolbar_html);
 
         // Build confirms map for toolbar buttons
         $confirms = [];
@@ -752,7 +860,7 @@ JS;
                 $confirms[$btn->get_name()] = $btn->get_confirm();
             }
         }
-        $confirms_json = json_encode((object)$confirms);
+        $confirms_json = $this->js((object)$confirms);
 
         $insert_before = ($position === 'top' || $position === 'both') ? 'true' : 'false';
         $insert_after = ($position === 'bottom' || $position === 'both') ? 'true' : 'false';
@@ -824,8 +932,8 @@ JS;
      */
     private function build_global_search_js(DataSet $dataset, string $selector, string $table_var): string
     {
-        $selector_escaped = json_encode($selector);
-        $placeholder = json_encode($dataset->get_search_placeholder() ?? 'Search...');
+        $selector_escaped = $this->js($selector);
+        $placeholder = $this->js($dataset->get_search_placeholder() ?? 'Search...');
 
         return <<<JS
     // Global search input with debounce
@@ -906,5 +1014,279 @@ JS;
     private function escape_js_html(string $value): string
     {
         return htmlspecialchars($value, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+    }
+
+    /**
+     * Convert a width value to the correct type for Tabulator.
+     * Pixel widths must be integers; percentage widths stay as strings.
+     *
+     * @param string $width  e.g. "130px", "50%", "200"
+     * @return int|string
+     */
+    private function parse_width(string $width)
+    {
+        return strpos($width, '%') !== false ? $width : (int)$width;
+    }
+
+    // =========================================================================
+    // JS Bootstrap: XSS Helper
+    // =========================================================================
+
+    /**
+     * Emit the _escapeHtml() JS helper function.
+     *
+     * Emitted once per table when card layout or compound cell lines are active.
+     *
+     * @return string
+     */
+    private function build_escape_html_js(): string
+    {
+        return <<<'JS'
+    function _escapeHtml(s) {
+        return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;')
+                        .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+    }
+
+JS;
+    }
+
+    // =========================================================================
+    // JS Bootstrap: Card Layout
+    // =========================================================================
+
+    /**
+     * Check if any column in the dataset has compound cell lines defined.
+     *
+     * @param DataSet $dataset
+     * @return bool
+     */
+    private function has_cell_lines(DataSet $dataset): bool
+    {
+        foreach ($dataset->each_column() as $col) {
+            if ($col->get_cell_lines() !== null) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Build the JS code for the card layout rowFormatter (variables + config.rowFormatter).
+     *
+     * Emitted BEFORE the Tabulator instance is created, within the IIFE — Tabulator
+     * snapshots top-level options (like rowFormatter) into a new internal object at
+     * construction time, so assigning config.rowFormatter afterwards would be a no-op.
+     * The mode-toggle/resize wiring that depends on the instance itself lives in
+     * build_card_layout_bootstrap_js(), emitted after construction.
+     * Requires _escapeHtml() and _cardActionHtml to already be defined.
+     *
+     * @param DataSet $dataset
+     * @return string
+     */
+    private function build_card_layout_config_js(DataSet $dataset): string
+    {
+        $card = $dataset->get_card_layout();
+
+        // Build the ordered list of card columns in PHP
+        $card_cols = [];
+        foreach ($dataset->each_column() as $col) {
+            $cv = $col->get_card_visible();
+            if ($cv === false) {
+                continue;
+            }
+            if ($cv === null && !$col->is_visible()) {
+                continue;
+            }
+            $card_cols[] = [
+                'field'      => $col->get_name(),
+                'title'      => $col->get_label(),
+                'card_order' => $col->get_card_order(),
+                'cell_lines' => $col->get_cell_lines(),
+            ];
+        }
+
+        usort($card_cols, function (array $a, array $b): int {
+            if ($a['card_order'] === null && $b['card_order'] === null) {
+                return 0;
+            }
+            if ($a['card_order'] === null) {
+                return 1;
+            }
+            if ($b['card_order'] === null) {
+                return -1;
+            }
+            return $a['card_order'] - $b['card_order'];
+        });
+
+        // Strip card_order from the JS payload (no longer needed at runtime)
+        $card_cols_js = array_map(function (array $c): array {
+            return [
+                'field'      => $c['field'],
+                'title'      => $c['title'],
+                'cell_lines' => $c['cell_lines'],
+            ];
+        }, $card_cols);
+
+        $card_cols_json   = $this->js(array_values($card_cols_js), JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+        $title_field_json = $this->js($card['title_field']);
+        $breakpoint       = (int)$card['breakpoint'];
+        $cols_per_row     = (int)$card['columns_per_row'];
+
+        return <<<JS
+    // ── Card layout ──────────────────────────────────────────────────────────
+    var _cardBreakpoint  = {$breakpoint};
+    var _cardTitleField  = {$title_field_json};
+    var _cardColsPerRow  = {$cols_per_row};
+    var _cardLastMobile  = window.innerWidth <= _cardBreakpoint;
+    var _cardResizeTimer = null;
+    var _cardColumns     = {$card_cols_json};
+
+    config.rowFormatter = function(row) {
+        var isMobile = window.innerWidth <= _cardBreakpoint;
+        if (!isMobile) return;
+
+        var data = row.getData();
+        var el   = row.getElement();
+
+        // Harvest already-formatted cell values before clobbering innerHTML
+        var fmt = {};
+        row.getCells().forEach(function(c) {
+            fmt[c.getColumn().getField()] = c.getElement().innerHTML;
+        });
+
+        var html = '<div class="ix-card-row">';
+        html += '<div class="ix-card-title">' + _escapeHtml(String(data[_cardTitleField] || '')) + '</div>';
+        html += '<div class="ix-card-fields" style="grid-template-columns:repeat(' + _cardColsPerRow + ',1fr)">';
+
+        _cardColumns.forEach(function(col) {
+            if (col.field === _cardTitleField) return;
+
+            if (col.cell_lines && col.cell_lines.length) {
+                col.cell_lines.forEach(function(line, idx) {
+                    var val = String(data[line.field] || '');
+                    if (!val) return;
+                    var lbl = (typeof line.label !== 'undefined') ? line.label : (idx === 0 ? col.title : '');
+                    html += '<div class="ix-card-field">';
+                    if (lbl) html += '<span class="ix-card-label">' + _escapeHtml(lbl) + '</span>';
+                    html += '<span class="ix-card-value">' + _escapeHtml(val) + '</span>';
+                    html += '</div>';
+                });
+            } else {
+                var raw = data[col.field];
+                if (raw === null || raw === undefined || String(raw) === '') return;
+                var v = fmt[col.field] !== undefined ? fmt[col.field] : _escapeHtml(String(raw));
+                html += '<div class="ix-card-field">';
+                html += '<span class="ix-card-label">' + _escapeHtml(col.title) + '</span>';
+                html += '<span class="ix-card-value">' + v + '</span>';
+                html += '</div>';
+            }
+        });
+
+        html += '</div>';
+        if (_cardActionHtml) html += '<div class="ix-card-actions">' + _cardActionHtml + '</div>';
+        html += '</div>';
+        el.innerHTML = html;
+
+        el.onclick = function(e) {
+            var btn = e.target.closest('[data-action]');
+            if (!btn) return;
+            var action = btn.getAttribute('data-action');
+            if (typeof _actionConfirms !== 'undefined' && _actionConfirms[action] && !confirm(_actionConfirms[action])) return;
+            if (_events[action] && typeof window[_events[action]] === 'function') {
+                window[_events[action]](data, row);
+            }
+        };
+    };
+
+JS;
+    }
+
+    /**
+     * Build the JS code that keeps the Tabulator header in sync with card mode
+     * and redraws rows when crossing the breakpoint.
+     *
+     * Emitted AFTER the Tabulator instance is created (needs {$table_var}.element).
+     * Toggles the 'ix-card-mode' class on the table's root element so the header
+     * row (column titles + per-column filters, meaningless once rows are cards)
+     * can be hidden in CSS scoped to that class — kept in sync with each dataset's
+     * own card_layout() breakpoint instead of a hardcoded CSS media query.
+     *
+     * @param string $table_var JS variable name of the Tabulator instance
+     * @return string
+     */
+    private function build_card_layout_bootstrap_js(string $table_var): string
+    {
+        return <<<JS
+    function _applyCardMode(isMobile) {
+        {$table_var}.element.classList.toggle('ix-card-mode', isMobile);
+    }
+    _applyCardMode(_cardLastMobile);
+
+    window.addEventListener('resize', function() {
+        clearTimeout(_cardResizeTimer);
+        _cardResizeTimer = setTimeout(function() {
+            var nowMobile = window.innerWidth <= _cardBreakpoint;
+            if (nowMobile !== _cardLastMobile) {
+                _cardLastMobile = nowMobile;
+                _applyCardMode(nowMobile);
+                {$table_var}.redraw(true);
+            }
+        }, 150);
+    });
+
+JS;
+    }
+
+    // =========================================================================
+    // JS Bootstrap: Compound Cell Lines
+    // =========================================================================
+
+    /**
+     * Build the JS code that replaces @@CELL_LINES_*@@ placeholders with
+     * real formatter closures for each compound column.
+     *
+     * Emitted after the Tabulator instance is created, within the IIFE.
+     * Requires _escapeHtml() to already be defined.
+     *
+     * @param DataSet $dataset
+     * @return string
+     */
+    private function build_cell_lines_js(DataSet $dataset): string
+    {
+        $js = "    // ── Compound cell line formatters ───────────────────────────────────────\n";
+
+        foreach ($dataset->each_column() as $col) {
+            $lines = $col->get_cell_lines();
+            if ($lines === null) {
+                continue;
+            }
+
+            $placeholder  = '@@CELL_LINES_' . strtoupper($col->get_name()) . '@@';
+            $placeholder_json = $this->js($placeholder);
+            $lines_json   = $this->js($lines, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+
+            $js .= <<<JS
+    for (var ci = 0; ci < config.columns.length; ci++) {
+        if (config.columns[ci].formatter === {$placeholder_json}) {
+            config.columns[ci].formatter = (function(lines) {
+                return function(cell) {
+                    var data = cell.getRow().getData();
+                    var html = '<div class="ix-cell-card">';
+                    for (var i = 0; i < lines.length; i++) {
+                        var val = data[lines[i].field];
+                        if (val === null || val === undefined || String(val) === '') continue;
+                        html += '<div class="ix-cell-' + lines[i].style + '">' + _escapeHtml(String(val)) + '</div>';
+                    }
+                    html += '</div>';
+                    return html;
+                };
+            })({$lines_json});
+        }
+    }
+
+JS;
+        }
+
+        return $js;
     }
 }

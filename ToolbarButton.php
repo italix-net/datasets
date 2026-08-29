@@ -1,14 +1,21 @@
 <?php
+/*
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at https://mozilla.org/MPL/2.0/.
+ */
 /**
  * Italix DataSets - ToolbarButton
  *
  * @package Italix\DataSets
- * @license LGPL-2.1-or-later
+ * @license MPL-2.0
  */
 
 declare(strict_types=1);
 
 namespace Italix\DataSets;
+
+use InvalidArgumentException;
 
 /**
  * A button in the toolbar that acts on table data.
@@ -26,8 +33,27 @@ class ToolbarButton extends ActionButton
      * @param string $label Display label
      * @param string $scope 'selected', 'all', or 'none'
      */
+    /**
+     * Scopes this library understands.
+     *
+     * Whitelisted rather than documented, because the failure of a typo is
+     * silence: `'selection'` instead of `'selected'` produces a button the
+     * client never enables, and nothing anywhere says why. The vocabulary was
+     * written down in four places and enforced in none.
+     */
+    public const SCOPES = ['selected', 'all', 'none'];
+
     public function __construct(string $name, string $label, string $scope = 'none')
     {
+        if (!in_array($scope, self::SCOPES, true)) {
+            throw new InvalidArgumentException(sprintf(
+                'Unknown toolbar button scope "%s" for button "%s". Use one of: %s.',
+                $scope,
+                $name,
+                implode(', ', self::SCOPES)
+            ));
+        }
+
         parent::__construct($name, $label);
         $this->scope = $scope;
     }

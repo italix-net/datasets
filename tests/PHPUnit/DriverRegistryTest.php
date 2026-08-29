@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-namespace Italix\DataSets\Tests;
+namespace Italix\DataSets\Tests\PHPUnit;
 
 use Italix\DataSets\Drivers\DriverRegistry;
 use Italix\DataSets\Drivers\Tabulator\TabulatorDriver;

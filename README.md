@@ -46,7 +46,7 @@ $ds->columns(['name', 'email', 'role', 'created_at']);
 
 $ds->column('name')->sortable(true)->searchable(true)->width('200px');
 $ds->column('email')->sortable(true)->searchable(true);
-$ds->column('role')->sortable(true)->h_align('center');
+$ds->column('role')->sortable(true)->horizontal_align('center');
 $ds->column('created_at')->sortable(true)->formatter('datetime');
 
 // Server-side data loading
@@ -258,7 +258,7 @@ $ds->column('price')
     ->width('120px')                   // Fixed width
     ->min_width('80px')                // Minimum width
     ->formatter('money', ['symbol' => '€'])  // Tabulator formatter
-    ->h_align('right')                 // Cell alignment
+    ->horizontal_align('right')                 // Cell alignment
     ->header_align('right')            // Header alignment
     ->frozen(true)                     // Sticky column
     ->css_class('font-mono')           // CSS class
@@ -335,4 +335,4 @@ See the `examples/` directory for complete, runnable examples:
 
 ## License
 
-LGPL-2.1-or-later. See [LICENSE](LICENSE) for details.
+MPL-2.0. See [LICENSE](LICENSE) for details.

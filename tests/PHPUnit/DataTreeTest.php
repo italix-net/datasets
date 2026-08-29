@@ -2,11 +2,11 @@
 
 declare(strict_types=1);
 
-namespace Italix\DataSets\Tests;
+namespace Italix\DataSets\Tests\PHPUnit;
 
 use Italix\DataSets\DataTree;
 use Italix\DataSets\TreeConfig;
-use Italix\DataSets\Tests\Fixtures\StubTableMeta;
+use Italix\DataSets\Tests\PHPUnit\Fixtures\StubTableMeta;
 use PHPUnit\Framework\TestCase;
 
 class DataTreeTest extends TestCase
